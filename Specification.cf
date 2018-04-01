@@ -1,0 +1,133 @@
+comment "//" ;
+comment "(*" "*)" ;
+
+token Identifier (letter (letter | digit | '_')* );
+token TypeIdentifier (lower (lower | digit)*);
+
+Parameter.              Param ::= Identifier ;
+Unit.                   Param ::= "()" ;
+WildCard.               Param ::= "_" ;
+
+entrypoints Program ;
+
+ProgramL.               Program ::= [Declaration] ;
+TypeDeclaration.        Declaration ::= "type" Identifier [TypeIdentifier] TypeDefinition ;
+TypeAnnotation.         Declaration ::= "@" Identifier "::" Type ;
+ValueDeclaration.       Declaration ::= "let" BindPattern "=" Expression ;
+
+TDAlias.                TypeDefinition ::= "=" Type ;
+TDUnion.                TypeDefinition ::= "=" [UnionDefinition] ;
+TDRecord.               TypeDefinition ::= "=" "{" [RecordTypeDefinition] "}" ;
+TDExtension.            TypeDefinition ::= "extends" Identifier "with" "{" [RecordTypeDefinition] "}" ;
+
+TList.                  Type ::= "[" Type "]" ;
+TTuple.                 Type ::= [TupleType] ;
+TRecord.                Type ::= "{" [RecordTypeDefinition] "}" ;
+TByName.               Type ::= Identifier "<"[Type]">" ;
+TFunction.              Type ::= Type "->" Type ;
+TParenthesis.           Type ::= "(" Type ")" ;
+TUnit.                  Type ::= "()" ;
+
+UnionDefinitionEnum.    UnionDefinition ::= Identifier ;
+UnionDefinitionTyped.   UnionDefinition ::= Identifier "of" Type ;
+
+LRecordTypeDefinition.  RecordTypeDefinition ::= Identifier "::" Type ;
+LTupleType.             TupleType ::= Type ;
+
+EVariable.              Expression ::= Identifier ;
+EConstructor.           Expression ::= Identifier Expression;
+ELiteral.               Expression ::= Literal ;
+EInfixOp.               Expression ::= Expression Op Expression ;
+EApplication.           Expression ::= Expression Expression ;
+ENegative.              Expression ::= "-" Expression ;
+ELambda.                Expression ::= [Identifier] "->" Expression ;
+ELet.                   Expression ::= "let" BindPattern "=" Expression "in" ;
+EIf.                    Expression ::= Expression Expression Expression ;
+EMatch.                 Expression ::= Expression [Alternate] ;
+EDo.                    Expression ::= Expression ;
+ETuple.                 Expression ::= [Tuple] ;
+EList.                  Expression ::= "[" [List] "]" ;
+EParenthesis.           Expression ::= "(" Expression ")" ;
+ERecordField.           Expression ::= Expression "." Identifier ;
+ELeftSection.           Expression ::= "(" Expression Op ")" ;
+ERightSection.          Expression ::= "(" Op Expression ")" ;
+ERecordConstruction.    Expression ::= "{" [RecordValue] "}" ;
+ERecordUpdate.          Expression ::= "{" Identifier "with" [RecordValue] "}" ;
+EListRange.             Expression ::= "[" Expression ".." Expression "]" ;
+EListComprehension.     Expression ::= "[" Expression "|" [Statement] "]" ;
+EExpressionWithTypeSig. Expression ::= Expression "::" Type ;
+
+LRecordValue.           RecordValue ::= Identifier "=" Expression ;
+TupleElement.           Tuple ::= Expression ;
+ListElement.            List ::= Expression ;
+
+LAlternate.             Alternate ::= Pattern "->" Expression ;
+
+PVariable.              Pattern ::= Identifier ;
+PLiteral.               Pattern ::= Sign Literal ;
+PApplication.           Pattern ::= Identifier Pattern ;
+PTuple.                 Pattern ::= [TuplePattern] ;
+PList.                  Pattern ::= "[" [ListPattern] "]" ;
+PListHead.              Pattern ::= Pattern ":" Pattern ;
+PListContains.          Pattern ::= "[" "..." Pattern "..." "]" ;
+PParenthesis.           Pattern ::= "(" Pattern ")" ;
+PWildCard.              Pattern ::= "_" ;
+PRecord.                Pattern ::= "{" [RecordPattern] "}" ;
+
+TuplePatternElem.       TuplePattern ::= Pattern ;
+ListPatternElem.        ListPattern ::= Pattern ;
+RecordPatternElem.      RecordPattern ::= Identifier "=" Pattern ;
+
+Char.                   Literal ::= Char ;
+String.                 Literal ::= String ;
+Integer.                Literal ::= Integer ;
+Float.                  Literal ::= Double ;
+
+NoSign.                 Sign ::= ;
+UnaryMinus.             Sign ::= "-" ;
+
+LStatement.             Statement ::= BindPattern "<-" Expression ;
+
+BVariable.              BindPattern ::= Identifier ;
+BApplication.           BindPattern ::= Identifier BindPattern ;
+BTuple.                 BindPattern ::= [TupleBindPattern] ;
+BList.                  BindPattern ::= "[" [ListBindPattern] "]" ;
+BListHead.              BindPattern ::= BindPattern ":" BindPattern ;
+BParenthesis.           BindPattern ::= "(" BindPattern ")" ;
+BWildCard.              BindPattern ::= "_" ;
+BRecord.                BindPattern ::= "{" [RecordBindPattern] "}" ;
+BFunctionDecl.          BindPattern ::= Identifier [Param] ;
+
+TupleBindPatternElem.   TupleBindPattern ::= BindPattern ;
+ListBindPatternElem.    ListBindPattern ::= BindPattern ;
+RecordBindPatternElem.  RecordBindPattern ::= Identifier "=" Identifier;
+
+token PossibleOperator (["<>|/=+-?*&^%$#!~"] +) ;
+Operator.               Op ::= PossibleOperator ;
+
+separator TypeIdentifier " " ;
+separator Type " " ;
+separator Identifier " ";
+separator Alternate "|" ;
+separator nonempty Param " " ;
+
+separator nonempty TuplePattern "," ;
+separator ListPattern "," ;
+separator RecordPattern "," ;
+
+separator RecordValue "," ;
+separator nonempty Tuple "," ;
+separator List "," ;
+
+separator nonempty Statement "," ;
+
+separator nonempty TupleBindPattern "," ;
+separator ListBindPattern "," ;
+separator nonempty RecordBindPattern "," ;
+
+separator nonempty TupleType "*" ;
+separator nonempty RecordTypeDefinition "," ;
+
+separator nonempty UnionDefinition "|" ;
+
+terminator Declaration "\n" ;

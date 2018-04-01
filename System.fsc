@@ -1,0 +1,35 @@
+(*
+ * This is the type definition file
+ * for a System object that holds 
+ * functions with side effects.
+ *)
+
+type Maybe a = None | Some a
+
+@toString :: a -> String
+
+type Stream =
+    {
+        ReadLine :: () -> String
+        ReadChar :: () -> Char
+        ReadLazy :: () -> String
+        Read :: () -> a
+        ReadMaybe :: () -> Maybe a
+
+        WriteLine :: String -> ()
+        WriteChar :: Char -> ()
+        Write :: a -> ()
+    }
+
+type IO =
+    {
+        OpenFile :: String -> Stream
+        CloseFile :: String -> ()
+        CreateInMemoryStream :: [Char] -> Stream
+    }
+
+type System = 
+    {
+        Console :: Stream
+        IO :: IO
+    }
