@@ -123,23 +123,16 @@ data Statement = LStatement BindPattern Expression
 
 data BindPattern
     = BVariable Identifier
-    | BApplication Identifier BindPattern
-    | BTuple [TupleBindPattern]
-    | BList [ListBindPattern]
+    | BTuple [BindPattern]
+    | BList [Identifier]
     | BListHead BindPattern BindPattern
     | BParenthesis BindPattern
     | BWildCard
     | BRecord [RecordBindPattern]
     | BFunctionDecl Identifier [Param]
   deriving (Eq, Ord, Show, Read)
-
-data TupleBindPattern = TupleBindPatternElem BindPattern
-  deriving (Eq, Ord, Show, Read)
-
-data ListBindPattern = ListBindPatternElem BindPattern
-  deriving (Eq, Ord, Show, Read)
-
-data RecordBindPattern = RecordBindPatternElem Identifier
+  
+data RecordBindPattern = RecordBindPatternElem Identifier Identifier
   deriving (Eq, Ord, Show, Read)
 
 data Op = Operator PossibleOperator

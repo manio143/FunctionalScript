@@ -19,6 +19,10 @@ let list = [1,2,3,4]
 let tuple = (1,"a")
 let rekord = {A = "s", B = 1}
 
+let [fst, snd] = list
+let (a,b) = tuple
+let {A -> str} = rekord
+
 let listMatches =
     match list with
     | [3] -> single value
@@ -54,6 +58,11 @@ type IntTree = Tree<Integer>
 type Person = {Name :: String, Age :: Integer}
 type Teacher extends Person with {Pupils :: [Person]}
 
+let matchUnion tree =
+    match tree with
+    | Empty -> //..
+    | Node (1, tl, tr) -> //..
+
 let Bob = {Name = "Bob", Age = 12}
 let Susan = {Bob with Name = "Susan"}
 let BobInWork = {Bob with Pupils = [Susan]}
@@ -63,8 +72,6 @@ let getName p = p.Name
 
 @getFirstPupil :: Teacher -> Person
 let getFirstPupil t = head <| t.Pupils
-
-let a, b = 10, 20
 
 let typeTest () =
     let n1 = getName Bob

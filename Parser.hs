@@ -3,8 +3,10 @@ module Parser where
 
 import AST
 
+import Prelude hiding (maybe)
+
 import Control.Monad
-import Text.Parsec hiding (token)
+import Text.Parsec hiding (token, spaces)
 import Text.Parsec.String
 import Data.Functor.Identity
 
@@ -12,7 +14,7 @@ parseFile :: ParsecT String () Identity Program -> String -> String -> Either Pa
 parseFile p filename contents = parse p filename contents
 
 pProgram :: Stream s m Char => ParsecT s u m Program
-pProgram = sepBy pDeclaration newlines >>= return . Program
+pProgram = endBy pDeclaration newlines >>= return . Program
 
 pDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pDeclaration = 
@@ -40,7 +42,7 @@ pTypeAnnotation = do
 pValueDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pValueDeclaration = do
     token "let"
-    bind <- pBindPattern
+    bind <- pBindPattern <?> "identifier"
     token "="
     expr <- pExpression
     return (ValueDeclaration bind expr)
@@ -51,9 +53,9 @@ pTypeDefinition = pTypeAssignment <|> pTypeExtension
 pTypeAssignment :: Stream s m Char => ParsecT s u m TypeDefinition
 pTypeAssignment = do
     token "="
-    try pRecordTypeDefinition <|>
-        try pAliasDefinition <|>
-        pUnionDefinitionList
+    pRecordTypeDefinition 
+      <|> try pUnionDefinitionList
+      <|> pAliasDefinition 
 
 pTypeExtension :: Stream s m Char => ParsecT s u m TypeDefinition
 pTypeExtension = do
@@ -85,7 +87,7 @@ pAliasDefinition = pType >>= return . TDAlias
 
 pUnionDefinitionList :: Stream s m Char => ParsecT s u m TypeDefinition
 pUnionDefinitionList =
-    pUnionElementDefinition `sepBy` (token "|")
+    pUnionElementDefinition `sepBy1` (token "|")
       >>= return . TDUnion
 
 pUnionElementDefinition :: Stream s m Char => ParsecT s u m UnionDefinition
@@ -103,10 +105,7 @@ pUnionElementWithDataDefinition = do
 pType :: Stream s m Char => ParsecT s u m Type
 pType = do
     t1 <- pConciseType
-    mt2 <- option Nothing (
-            (try (pFunctionType t1) >>= return . Just)
-            <|> (try (pTupleType t1) >>= return . Just)
-        )
+    mt2 <- maybe (try (pTupleType t1) <|> try (pFunctionType t1))
     case mt2 of
         Nothing -> return t1
         Just t2 -> return t2
@@ -159,8 +158,70 @@ pRecordType = do
 pExpression :: Stream s m Char => ParsecT s u m Expression
 pExpression = return (EVariable $ Identifier "x")
 pBindPattern :: Stream s m Char => ParsecT s u m BindPattern
-pBindPattern = return (BVariable $ Identifier "x")
+pBindPattern =
+    pBindParenthesis
+      <|> pBindRecord
+      <|> pBindList
+      <|> (try (rtoken "_" <* oneOf " \t") >> return BWildCard)
+      <|> (do
+            id <- pIdentifier
+            r <- maybe $ pBindFunctionDecl id
+            case r of
+                Nothing -> return (BVariable id)
+                Just r_ -> return r_
+            )
 
+pBindFunctionDecl :: Stream s m Char => Identifier -> ParsecT s u m BindPattern
+pBindFunctionDecl id = do
+    whiteSpace
+    r <- endBy1 pParam whiteSpace
+    return (BFunctionDecl id r)
+
+pParam :: Stream s m Char => ParsecT s u m Param
+pParam =
+    (string "()" >> return Unit)
+      <|> try (string "_" <* notFollowedBy pIdentifier  >> return WildCard)
+      <|> (pIdentifier >>= return . Parameter)
+
+pBindParenthesis :: Stream s m Char => ParsecT s u m BindPattern
+pBindParenthesis = do
+    token "("
+    b <- try pBindListHead
+            <|> try pBindTuple
+            <|> (pBindPattern >>= return . BParenthesis)
+    token ")"
+    return b
+    where
+        pBindListHead :: Stream s m Char => ParsecT s u m BindPattern
+        pBindListHead = do
+            b1 <- pBindPattern
+            token ":"
+            b2 <- pBindPattern
+            return (BListHead b1 b2)
+
+        pBindTuple :: Stream s m Char => ParsecT s u m BindPattern
+        pBindTuple = sepBy2 pBindPattern comma >>= return . BTuple
+
+pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
+pBindRecord = do
+    token "{"
+    rd <- sepBy1 pBindRecordElem comma
+    token "}"
+    return (BRecord rd)
+    where
+        pBindRecordElem :: Stream s m Char => ParsecT s u m RecordBindPattern
+        pBindRecordElem = do
+            id <- pIdentifier
+            token "->"
+            varId <- pIdentifier
+            return (RecordBindPatternElem id varId)
+
+pBindList :: Stream s m Char => ParsecT s u m BindPattern
+pBindList = do
+    token "["
+    rd <- sepBy pIdentifier comma
+    token "]"
+    return (BList rd)
 
 
 pGenericTypeArgumentsList :: Stream s m Char => ParsecT s u m [Type]
@@ -192,10 +253,16 @@ pComment = string "//" <* manyTill anyToken (string "\n")
        <|> string "(*" <* manyTill anyToken (string "*)")
 
 whiteSpace :: Stream s m Char => ParsecT s u m ()
-whiteSpace = void $ (many $ (try pComment) <|> string " " <|> string "\n" <|> string "\t")
+whiteSpace = (void $ (many $ (try pComment) <|> string " " <|> string "\t")) <?> "whitespace"
+
+spaces :: Stream s m Char => ParsecT s u m ()
+spaces = void $ many $ ((string " " <|> string "\t") <?> "whitespace")
 
 newlines :: Stream s m Char => ParsecT s u m ()
-newlines = void $ many $ (rtoken "\n")
+newlines = void inner
+    where 
+        inner = spaces *> ((many1 $ (string "\n")) <?> "requiring new line")
+                 
 
 comma :: Stream s m Char => ParsecT s u m ()
 comma = token ","
@@ -228,3 +295,7 @@ sepBy2 p sep = do
     _ <- sep
     ws <- sepBy1 p sep
     return (w:ws)
+
+
+maybe :: Stream s m Char => ParsecT s u m a -> ParsecT s u m (Maybe a)
+maybe p = option Nothing (try p >>= return . Just)
