@@ -188,11 +188,11 @@ pTypeIdentifier =
       >>= return . TypeIdentifier
 
 pComment :: Stream s m Char => ParsecT s u m String
-pComment = string "//" <* endBy (many anyToken) (string "\n")
-       <|> between (string "(*") (string "*)") (many anyToken)
+pComment = string "//" <* manyTill anyToken (string "\n")
+       <|> string "(*" <* manyTill anyToken (string "*)")
 
 whiteSpace :: Stream s m Char => ParsecT s u m ()
-whiteSpace = void $ (many $ string " " <|> string "\n" <|> string "\t") <|> (many pComment)
+whiteSpace = void $ (many $ (try pComment) <|> string " " <|> string "\n" <|> string "\t")
 
 newlines :: Stream s m Char => ParsecT s u m ()
 newlines = void $ many $ (rtoken "\n")
