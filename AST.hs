@@ -11,8 +11,6 @@ newtype Identifier = Identifier String
   deriving (Eq, Ord, Show, Read)
 newtype TypeIdentifier = TypeIdentifier String
   deriving (Eq, Ord, Show, Read)
-newtype PossibleOperator = PossibleOperator String
-  deriving (Eq, Ord, Show, Read)
 data Param = Parameter Identifier | Unit | WildCard
   deriving (Eq, Ord, Show, Read)
 
@@ -130,11 +128,20 @@ data BindPattern
     | BWildCard
     | BRecord [RecordBindPattern]
     | BFunctionDecl Identifier [Param]
+    | BOpDecl Op [Param]
   deriving (Eq, Ord, Show, Read)
   
 data RecordBindPattern = RecordBindPatternElem Identifier Identifier
   deriving (Eq, Ord, Show, Read)
 
-data Op = Operator PossibleOperator
+data Op = Operator String OpLevel
   deriving (Eq, Ord, Show, Read)
 
+data OpLevel = 
+  PipeLevel         -- <|, <||, <|||, |>, ||>, |||>, <$>, <$, $>
+  | ComparisonLevel -- <, <=, ==, ===, >=, >, !=, /=, =/=
+  | SubArithmetic   -- &&, ||, >>, <<, any user defined
+  | Arithmetic1     -- +, -
+  | Arithmetic2     -- *, /
+  | Arithmetic3     -- **, ***, %, ^, &, |
+    deriving (Eq, Ord, Show, Read)

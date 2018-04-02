@@ -167,7 +167,8 @@ pExpression :: Stream s m Char => ParsecT s u m Expression
 pExpression = return (EVariable $ Identifier "x")
 pBindPattern :: Stream s m Char => ParsecT s u m BindPattern
 pBindPattern =
-    pBindParenthesis
+    try pBindParenthesis
+      <|> pBindOp
       <|> pBindRecord
       <|> pBindList
       <|> (try (rtoken "_" <* oneOf " \t") >> return BWildCard)
@@ -210,6 +211,14 @@ pBindParenthesis = do
         pBindTuple :: Stream s m Char => ParsecT s u m BindPattern
         pBindTuple = sepBy2 pBindPattern comma >>= return . BTuple
 
+pBindOp :: Stream s m Char => ParsecT s u m BindPattern
+pBindOp = do
+    token "("
+    op <- pOperator
+    token ")"
+    r <- endBy1 pParam whiteSpace
+    return (BOpDecl op r)
+
 pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
 pBindRecord = do
     token "{"
@@ -231,6 +240,20 @@ pBindList = do
     token "]"
     return (BList rd)
 
+
+pOperator :: Stream s m Char => ParsecT s u m Op
+pOperator = do
+    opLiteral <- many1 $ oneOf "<>?/|:+=-*&^%$#!~"
+    let level = findIn definedOperators opLiteral
+    case level of
+        Nothing -> return (Operator opLiteral SubArithmetic)
+        Just l -> return (Operator opLiteral l)
+
+    where
+        findIn :: [([String], OpLevel)] -> String -> Maybe OpLevel
+        findIn [] lit = Nothing
+        findIn (x:xs) lit | elem lit (fst x) = Just $ snd x
+                          | otherwise = findIn xs lit
 
 pGenericTypeArgumentsList :: Stream s m Char => ParsecT s u m [Type]
 pGenericTypeArgumentsList = do
@@ -317,3 +340,14 @@ sepBy2 p sep = do
 
 maybe :: Stream s m Char => ParsecT s u m a -> ParsecT s u m (Maybe a)
 maybe p = option Nothing (try p >>= return . Just)
+
+definedOperators = [
+    (["<|","<||","<|||","|>","||>","|||>",
+      "<$>", "<$", "$>"], PipeLevel),
+    (["<", "<=", "==", "===", ">", ">=",
+      "!=", "/=", "=/=", "!==", "/=="], ComparisonLevel),
+    (["&&", "||", "<<", ">>"], SubArithmetic),
+    (["+", "-"], Arithmetic1),
+    (["*", "/"], Arithmetic2),
+    (["**", "***", "%", "^", "&", "|", "++", "--"], Arithmetic3)
+  ]
