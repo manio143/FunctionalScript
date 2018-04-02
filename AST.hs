@@ -21,13 +21,13 @@ data Program = Program [Declaration]
 
 data Declaration
     = TypeDeclaration Identifier [TypeIdentifier] TypeDefinition
+    | DataTypeDeclaration Identifier [TypeIdentifier] [UnionDefinition]
     | TypeAnnotation Identifier Type
     | ValueDeclaration BindPattern Expression
   deriving (Eq, Ord, Show, Read)
 
 data TypeDefinition
     = TDAlias Type
-    | TDUnion [UnionDefinition]
     | TDRecord [RecordTypeDefinition]
     | TDExtension Identifier [RecordTypeDefinition]
   deriving (Eq, Ord, Show, Read)

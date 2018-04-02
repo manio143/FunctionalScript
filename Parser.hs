@@ -14,22 +14,31 @@ parseFile :: ParsecT String () Identity Program -> String -> String -> Either Pa
 parseFile p filename contents = parse p filename contents
 
 pProgram :: Stream s m Char => ParsecT s u m Program
-pProgram = endBy pDeclaration newlines >>= return . Program
+pProgram = endBy pDeclaration newlines1 >>= return . Program
 
 pDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pDeclaration = 
-    try pTypeDeclaration
-      <|> try pTypeAnnotation
+    pTypeDeclaration
+      <|> pDataTypeDeclaration
+      <|> pTypeAnnotation
       <|> pValueDeclaration
 
 pTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pTypeDeclaration = do
     token "type"
     typeId <- pIdentifier
-    whiteSpace
     typeGenericIdList <- option [] pTypeIdentifierList
     typeDef <- pTypeDefinition
     return (TypeDeclaration typeId typeGenericIdList typeDef)
+
+pDataTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
+pDataTypeDeclaration = do
+    token "data"
+    typeId <- pIdentifier
+    typeGenericIdList <- option [] pTypeIdentifierList
+    rbtoken "="
+    unionDefinition <- pUnionDefinitionList
+    return (DataTypeDeclaration typeId typeGenericIdList unionDefinition)
 
 pTypeAnnotation :: Stream s m Char => ParsecT s u m Declaration
 pTypeAnnotation = do
@@ -43,7 +52,7 @@ pValueDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pValueDeclaration = do
     token "let"
     bind <- pBindPattern <?> "identifier"
-    token "="
+    rbtoken "="
     expr <- pExpression
     return (ValueDeclaration bind expr)
 
@@ -52,9 +61,8 @@ pTypeDefinition = pTypeAssignment <|> pTypeExtension
 
 pTypeAssignment :: Stream s m Char => ParsecT s u m TypeDefinition
 pTypeAssignment = do
-    token "="
+    rbtoken "="
     pRecordTypeDefinition 
-      <|> try pUnionDefinitionList
       <|> pAliasDefinition 
 
 pTypeExtension :: Stream s m Char => ParsecT s u m TypeDefinition
@@ -68,9 +76,9 @@ pTypeExtension = do
 
 pRecordTypeDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
 pRecordTypeDefinition = do
-    token "{"
+    rbtoken "{"
     rd <- pRecordFieldTypeDefinitionList
-    token "}"
+    lbtoken "}"
     return (TDRecord rd)
 
 pRecordFieldTypeDefinitionList :: Stream s m Char => ParsecT s u m [RecordTypeDefinition]
@@ -85,10 +93,10 @@ pRecordFieldTypeDefinitionList = sepBy1 (
 pAliasDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
 pAliasDefinition = pType >>= return . TDAlias
 
-pUnionDefinitionList :: Stream s m Char => ParsecT s u m TypeDefinition
-pUnionDefinitionList =
-    pUnionElementDefinition `sepBy1` (token "|")
-      >>= return . TDUnion
+pUnionDefinitionList :: Stream s m Char => ParsecT s u m [UnionDefinition]
+pUnionDefinitionList = do
+    _ <- maybe $ token "|"
+    pUnionElementDefinition `sepBy1` (lbtoken "|")
 
 pUnionElementDefinition :: Stream s m Char => ParsecT s u m UnionDefinition
 pUnionElementDefinition =
@@ -253,19 +261,23 @@ pComment = string "//" <* manyTill anyToken (string "\n")
        <|> string "(*" <* manyTill anyToken (string "*)")
 
 whiteSpace :: Stream s m Char => ParsecT s u m ()
-whiteSpace = (void $ (many $ (try pComment) <|> string " " <|> string "\t")) <?> "whitespace"
+whiteSpace = void $ (many $ ((try pComment) <|> string " " <|> string "\t" <?> "whitespace"))
 
-spaces :: Stream s m Char => ParsecT s u m ()
-spaces = void $ many $ ((string " " <|> string "\t") <?> "whitespace")
+-- spaces :: Stream s m Char => ParsecT s u m ()
+-- spaces = void $ many $ ((string " " <|> string "\t") <?> "whitespace")
 
 newlines :: Stream s m Char => ParsecT s u m ()
-newlines = void inner
-    where 
-        inner = spaces *> ((many1 $ (string "\n")) <?> "requiring new line")
+newlines = _newlines many
+
+newlines1 :: Stream s m Char => ParsecT s u m ()
+newlines1 = _newlines many1
+
+_newlines :: Stream s m Char => (ParsecT s u m String -> ParsecT s u m [String]) -> ParsecT s u m ()    
+_newlines combinator = void $ whiteSpace *> ((combinator $ (string "\n")) <?> "a new line")
                  
 
 comma :: Stream s m Char => ParsecT s u m ()
-comma = token ","
+comma = rbtoken ","
 
 ltoken :: Stream s m Char => String -> ParsecT s u m ()
 ltoken s = void $ string s <* whiteSpace
@@ -275,6 +287,12 @@ rtoken s = void $ whiteSpace *> string s
 
 token :: Stream s m Char => String -> ParsecT s u m ()
 token s = void $ whiteSpace *> string s <* whiteSpace
+
+rbtoken :: Stream s m Char => String -> ParsecT s u m ()
+rbtoken s = void $ whiteSpace *> string s <* newlines <* whiteSpace
+
+lbtoken :: Stream s m Char => String -> ParsecT s u m ()
+lbtoken s = void $ (try $ newlines *> whiteSpace *> string s) <* whiteSpace
 
 asArray :: Stream s m Char => a -> ParsecT s u m [a]
 asArray = return . (:[])
