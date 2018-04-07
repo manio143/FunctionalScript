@@ -1,10 +1,10 @@
-(* To jest komentarz *)
+(* To jest komentarz *) //
 // To jest komentarz do końca linii
 
 let x = 10
 let y = 1.2
 
-let f x y = x*10 + y
+let f x y = x * 10 + y
 
 let g x = let y = x*10 in y+1
 
@@ -33,26 +33,23 @@ let listMatches =
 
 let tupleMatches =
     match tuple with
-    | value, value ->
-    | var, value ->
-    | var, var ->
+    | (1, "b") -> ()
+    | (a, 1) -> ()
+    | (a, b) -> ()
 
 let recordMatches =
     match rekord with
-    | {A = var} ->
-    | {A = value} ->
-//  | {A::type, B::type, C::type} -> rekord zawiera pola o podanych typach
-// The type system shall take care of it
-
+    | {A = var} -> ()
+    | {A = 500} -> ()
 
 @map :: (a -> b) -> [a] -> [b]
 let map f l = 
     match l with
-    | x:xs -> f x : map f xs
+    | (x:xs) -> f(x) : map(f, xs)
     | [] -> []
 // funkcje są domyślnie rekurencyjne
 
-type Tree<a> = Empty | Node of a * (Tree<a>) * (Tree<a>)
+data Tree<a> = Empty | Node of a * (Tree<a>) * (Tree<a>)
 type F<a,b,c> = (a -> b) -> (b -> c) -> a -> c
 type IntTree = Tree<Integer>
 type Person = {Name :: String, Age :: Integer}
@@ -60,8 +57,8 @@ type Teacher extends Person with {Pupils :: [Person]}
 
 let matchUnion tree =
     match tree with
-    | Empty -> //..
-    | Node (1, tl, tr) -> //..
+    | Empty -> ()
+    | Node (1, tl, tr) -> ()
 
 let Bob = {Name = "Bob", Age = 12}
 let Susan = {Bob with Name = "Susan"}

@@ -4,6 +4,7 @@ module Parser where
 import AST
 
 import Prelude hiding (maybe)
+import qualified Data.Maybe
 
 import Control.Monad
 import Text.Parsec hiding (token, spaces)
@@ -25,7 +26,7 @@ pDeclaration =
 
 pTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pTypeDeclaration = do
-    token "type"
+    lbtoken "type"
     typeId <- pIdentifier
     typeGenericIdList <- option [] pTypeIdentifierList
     typeDef <- pTypeDefinition
@@ -33,7 +34,7 @@ pTypeDeclaration = do
 
 pDataTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pDataTypeDeclaration = do
-    token "data"
+    lbtoken "data"
     typeId <- pIdentifier
     typeGenericIdList <- option [] pTypeIdentifierList
     rbtoken "="
@@ -50,7 +51,7 @@ pTypeAnnotation = do
 
 pValueDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pValueDeclaration = do
-    token "let"
+    lbtoken "let"
     bind <- pBindPattern <?> "identifier"
     rbtoken "="
     expr <- pExpression
@@ -163,8 +164,249 @@ pRecordType = do
         TDRecord rd_ -> return (TRecord rd_)
 
 
+
+
+-- pExpression :: Stream s m Char => ParsecT s u m Expression
+-- pExpression = do
+--     e1 <- pConciseExpression
+--     me2 <- maybe (pDotExpr e1 <|> pWithTypeExpr e1 <|> pInfixOpExpr e1 <|> pApplicationExpr e1)
+--     case me2 of
+--         Nothing -> return e1
+--         Just e2 -> return e2
+
+pConciseExpression :: Stream s m Char => ParsecT s u m Expression
+pConciseExpression = 
+    pNegativeExpr <|> pLetExpr {-<|> TODO pMatchExpr-}
+     <|> pLiteral <|> pVariableExpr <|>
+     pDoExpr <|> try pTupleExpr <|> pListExpr <|>
+     pRecordExpr <|> pIfThenElseExpr <|> (parenthesis pExpression >>= return . EParenthesis) <|> pLambdaExpr
+
+pNegativeExpr :: Stream s m Char => ParsecT s u m Expression
+pNegativeExpr = do
+    token "-"
+    e <- pExpression
+    return (ENegative e)
+
+pLetExpr :: Stream s m Char => ParsecT s u m Expression
+pLetExpr = do
+    lbtoken "let"
+    bp <- pBindPattern
+    rbtoken "="
+    e1 <- pExpression
+    rbtoken "in" <|> newlines1
+    e2 <- pExpression
+    return (ELet bp e1 e2)
+
+pLiteral :: Stream s m Char => ParsecT s u m Expression
+pLiteral = (pStringLiteral <|> pNumLiteral <|> pCharLiteral) >>= return . ELiteral
+
+pStringLiteral :: Stream s m Char => ParsecT s u m Literal
+pStringLiteral = do
+    rtoken "\""
+    str <- manyTill pReadChar (ltoken "\"")
+    return (LString str)
+
+pReadChar :: Stream s m Char => ParsecT s u m Char
+pReadChar = pReadEscapedChar <|> anyChar
+pReadEscapedChar :: Stream s m Char => ParsecT s u m Char
+pReadEscapedChar = do
+    string "\\"
+    c <- anyChar
+    case c of
+        'n' -> return '\n'
+        't' -> return '\t'
+        '\\' -> return '\\'
+        _ -> unexpected "invalid escape sequence"
+
+pNumLiteral :: Stream s m Char => ParsecT s u m Literal
+pNumLiteral = do
+    num1 <- many1 digit
+    mn2 <- maybe (string "." *> many1 digit)
+    case mn2 of
+        Nothing -> return . LInteger $ (read num1 :: Integer)
+        Just num2 -> return . LFloat $ (read (num1 ++ "." ++ num2) :: Double)
+
+pCharLiteral :: Stream s m Char => ParsecT s u m Literal
+pCharLiteral = do
+    rtoken "'"
+    c <- pReadChar
+    ltoken "'"
+    return (LChar c)
+
+pVariableExpr :: Stream s m Char => ParsecT s u m Expression
+pVariableExpr = pIdentifier >>= return . EVariable
+
+pDoExpr :: Stream s m Char => ParsecT s u m Expression
+pDoExpr = do
+    lbtoken "do"
+    e <- pExpression
+    return (EDo e)
+
+pIfThenElseExpr :: Stream s m Char => ParsecT s u m Expression
+pIfThenElseExpr = do
+    lbtoken "if"
+    cond <- pExpression
+    lbtoken "then"
+    tr <- pExpression
+    lbtoken "else"
+    fl <- pExpression
+    return (EIf cond tr fl)
+
+pLambdaExpr :: Stream s m Char => ParsecT s u m Expression
+pLambdaExpr = do
+    lbtoken "\\"
+    p <- endBy1 pParam whiteSpace
+    token "->"
+    body <- pExpression
+    return (ELambda p body)
+
+pTupleExpr :: Stream s m Char => ParsecT s u m Expression
+pTupleExpr = do
+    token "("
+    exps <- sepBy2 pExpression comma
+    token ")"
+    return (ETuple exps)
+
+pListExpr :: Stream s m Char => ParsecT s u m Expression
+pListExpr = do
+    token "["
+    e <- try pListCommaSeparated <|> try pRange <|> pComprehension
+    token "]"
+    return e
+    where
+        pListCommaSeparated :: Stream s m Char => ParsecT s u m Expression
+        pListCommaSeparated = sepBy pExpression comma >>= return . EList
+        pRange :: Stream s m Char => ParsecT s u m Expression
+        pRange = do
+            e1 <- pExpression
+            token ".."
+            e2 <- pExpression
+            return (EListRange e1 e2)
+        pComprehension :: Stream s m Char => ParsecT s u m Expression
+        pComprehension = do
+            e1 <- pExpression
+            token "|"
+            stms <- sepBy1 pStatement comma
+            return (EListComprehension e1 stms)
+        pStatement :: Stream s m Char => ParsecT s u m Statement
+        pStatement = do
+            bp <- pBindPattern
+            token "<-"
+            e <- pExpression
+            return (Statement bp e)
+
+pRecordExpr :: Stream s m Char => ParsecT s u m Expression
+pRecordExpr = do
+    token "{"
+    e <- try pWithRec <|> pNewRec
+    token "}"
+    return e
+    where
+        pWithRec :: Stream s m Char => ParsecT s u m Expression
+        pWithRec = do
+            var <- pIdentifier
+            rbtoken "with"
+            ERecordConstruction recs <- pNewRec
+            return (ERecordUpdate var recs)
+        pNewRec :: Stream s m Char => ParsecT s u m Expression
+        pNewRec = sepBy1 pFieldAssignment comma >>= return . ERecordConstruction
+        pFieldAssignment :: Stream s m Char => ParsecT s u m RecordValue
+        pFieldAssignment = do
+            id <- pIdentifier
+            token "="
+            e <- pExpression
+            return (RecordValue id e)
+
 pExpression :: Stream s m Char => ParsecT s u m Expression
-pExpression = return (EVariable $ Identifier "x")
+pExpression = pOpExpression [PipeLevel, ComparisonLevel, SubArithmetic, Arithmetic1, Arithmetic2, Arithmetic3]
+
+pOpExpression :: Stream s m Char => [OpLevel] -> ParsecT s u m Expression
+pOpExpression (x:y:xs) = do
+    e1 <- pOpExpression (y:xs)
+    me2 <- maybe (pInfix e1)
+    case me2 of
+        Nothing -> return e1
+        Just e2 -> return e2
+    where
+        pInfix e1 = do
+            ops <- newlines *> pOp <* newlines
+            e2 <- pOpExpression (y:xs)
+            let ass = assoc ops
+            let op = Operator ops x
+            case ass of
+                LeftAssoc -> do
+                    me3 <- maybe (pInfix (EInfixOp e1 op e2))
+                    case me3 of
+                        Nothing -> return (EInfixOp e1 op e2)
+                        Just e3 -> return e3
+                RightAssoc -> do
+                    me3 <- maybe (pInfix e2)
+                    case me3 of
+                        Nothing -> return (EInfixOp e1 op e2)
+                        Just e3 -> return (EInfixOp e1 op e3)
+        pOp :: Stream s m Char => ParsecT s u m String
+        pOp =
+            lookup2 x definedOperators
+            $> Data.Maybe.maybe unexpectedOp 
+                (foldl (<|>) unexpectedOp . (map (try . string)))
+
+
+pOpExpression [x] = do
+    e1 <- pDotExpr
+    me2 <- maybe (pInfix e1)
+    case me2 of
+        Nothing -> return e1
+        Just e2 -> return e2
+    where
+        pInfix e1 = do
+            ops <- newlines *> pOp <* newlines
+            e2 <- pDotExpr
+            let ass = assoc ops
+            let op = Operator ops x
+            case ass of
+                LeftAssoc -> do
+                    me3 <- maybe (pInfix (EInfixOp e1 op e2))
+                    case me3 of
+                        Nothing -> return (EInfixOp e1 op e2)
+                        Just e3 -> return e3
+                RightAssoc -> do
+                    me3 <- maybe (pInfix e2)
+                    case me3 of
+                        Nothing -> return (EInfixOp e1 op e2)
+                        Just e3 -> return (EInfixOp e1 op e3)
+        pOp :: Stream s m Char => ParsecT s u m String
+        pOp =
+            lookup2 x definedOperators
+            $> Data.Maybe.maybe unexpectedOp
+                (foldl (<|>) unexpectedOp . (map (try . string)))
+
+unexpectedOp :: Stream s m Char => ParsecT s u m String
+unexpectedOp = unexpected "undefined operator"
+
+pDotExpr :: Stream s m Char => ParsecT s u m Expression
+pDotExpr = do
+    e <- pWithTypeExpr
+    mi <- maybe (string "."  *> pIdentifier)
+    case mi of
+        Nothing -> return e
+        Just id -> return (ERecordField e id)
+
+pWithTypeExpr :: Stream s m Char => ParsecT s u m Expression
+pWithTypeExpr = do
+    e <- pApplicationExpr
+    mt <- maybe (token "::" *> pType)
+    case mt of
+        Nothing -> return e
+        Just t -> return (EExpressionWithTypeSig e t)
+
+pApplicationExpr :: Stream s m Char => ParsecT s u m Expression
+pApplicationExpr = do
+    e1 <- pConciseExpression
+    me2 <- maybe (whiteSpace *> pExpression)
+    case me2 of
+        Nothing -> return e1
+        Just e2 -> return (EApplication e1 e2)
+
 pBindPattern :: Stream s m Char => ParsecT s u m BindPattern
 pBindPattern =
     try pBindParenthesis
@@ -346,8 +588,20 @@ definedOperators = [
       "<$>", "<$", "$>"], PipeLevel),
     (["<", "<=", "==", "===", ">", ">=",
       "!=", "/=", "=/=", "!==", "/=="], ComparisonLevel),
-    (["&&", "||", "<<", ">>"], SubArithmetic),
-    (["+", "-"], Arithmetic1),
+    (["||", "<<", ">>", "<=>", "<==", "==>", ">=>", "<=<", "~>", "<~", "<<=", "=>>", "=<<", ">>="], SubArithmetic),
+    (["+", "-","&&"], Arithmetic1),
     (["*", "/"], Arithmetic2),
     (["**", "***", "%", "^", "&", "|", "++", "--"], Arithmetic3)
   ]
+
+assoc op =
+    let d = ["<|","<||","<|||","<$","<$>","<<=","<==",
+             "=<<","<=<","<~","<<","**","***"] in
+        if elem op d then RightAssoc else LeftAssoc
+
+lookup2 x [] = Nothing
+lookup2 x ((a,b):xs) | x == b = Just a
+                     | otherwise = lookup2 x xs
+
+
+($>) a b = b $ a

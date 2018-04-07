@@ -53,21 +53,21 @@ data TupleType = LTupleType Type
 
 data Expression
     = EVariable Identifier
-    | EConstructor Identifier Expression
     | ELiteral Literal
     | EInfixOp Expression Op Expression
     | EApplication Expression Expression
     | ENegative Expression
-    | ELambda [Identifier] Expression
-    | ELet BindPattern Expression
+    | ELambda [Param] Expression
+    | ELet BindPattern {- = -} Expression {- in -} Expression
     | EIf Expression Expression Expression
     | EMatch Expression [Alternate]
     | EDo Expression
-    | ETuple [Tuple]
-    | EList [List]
+    | ETuple [Expression]
+    | EList [Expression]
     | EParenthesis Expression
     | ELeftSection Expression Op
     | ERightSection Op Expression
+    | ERecordField Expression Identifier
     | ERecordConstruction [RecordValue]
     | ERecordUpdate Identifier [RecordValue]
     | EListRange Expression Expression
@@ -76,12 +76,6 @@ data Expression
   deriving (Eq, Ord, Show, Read)
 
 data RecordValue = RecordValue Identifier Expression
-  deriving (Eq, Ord, Show, Read)
-
-data Tuple = TupleElement Expression
-  deriving (Eq, Ord, Show, Read)
-
-data List = ListElement Expression
   deriving (Eq, Ord, Show, Read)
 
 data Alternate = LAlternate Pattern Expression
@@ -110,13 +104,13 @@ data RecordPattern = RecordPatternElem Identifier Pattern
   deriving (Eq, Ord, Show, Read)
 
 data Literal
-    = Char Char | String String | Integer Integer | Float Double
+    = LChar Char | LString String | LInteger Integer | LFloat Double
   deriving (Eq, Ord, Show, Read)
 
 data Sign = NoSign | UnaryMinus
   deriving (Eq, Ord, Show, Read)
 
-data Statement = LStatement BindPattern Expression
+data Statement = Statement BindPattern Expression
   deriving (Eq, Ord, Show, Read)
 
 data BindPattern
@@ -140,8 +134,10 @@ data Op = Operator String OpLevel
 data OpLevel = 
   PipeLevel         -- <|, <||, <|||, |>, ||>, |||>, <$>, <$, $>
   | ComparisonLevel -- <, <=, ==, ===, >=, >, !=, /=, =/=
-  | SubArithmetic   -- &&, ||, >>, <<, any user defined
+  | SubArithmetic   -- &&, ||, >>, <<, <=>, <==, ==>, >=>, <=<, ~>, <~
   | Arithmetic1     -- +, -
   | Arithmetic2     -- *, /
   | Arithmetic3     -- **, ***, %, ^, &, |
     deriving (Eq, Ord, Show, Read)
+
+data OpAssoc = LeftAssoc | RightAssoc
