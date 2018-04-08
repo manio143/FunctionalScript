@@ -33,5 +33,5 @@ interpret file args = do
         do
             h <- openFile file ReadMode
             contents <- hGetContents h
-            let ast = parseFile pProgram file contents
+            let ast = parseFile file contents
             print ast

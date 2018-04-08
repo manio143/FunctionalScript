@@ -17,7 +17,7 @@ let conditional x = if x > 1 then 1 else 0
 
 let list = [1,2,3,4]
 let tuple = (1,"a")
-let rekord = {A = "s", B = 1}
+let rekord = {A = "s"; B = 1}
 
 let [fst, snd] = list
 let (a,b) = tuple
@@ -25,11 +25,11 @@ let {A -> str} = rekord
 
 let listMatches =
     match list with
-    | [3] -> single value
-    | [1,2] -> j.w.
-    | [...3...] -> list contains 3
-    | h:t -> head and list tail
-    | [] -> empty
+    | [3] -> ()
+    | [1,2] -> ()
+    | [...3...] -> ()
+    | (h:t) -> ()
+    | [] -> ()
 
 let tupleMatches =
     match tuple with
@@ -52,15 +52,15 @@ let map f l =
 data Tree<a> = Empty | Node of a * (Tree<a>) * (Tree<a>)
 type F<a,b,c> = (a -> b) -> (b -> c) -> a -> c
 type IntTree = Tree<Integer>
-type Person = {Name :: String, Age :: Integer}
+type Person = {Name :: String; Age :: Integer}
 type Teacher extends Person with {Pupils :: [Person]}
 
 let matchUnion tree =
     match tree with
     | Empty -> ()
-    | Node (1, tl, tr) -> ()
+    | Node((1, tl, tr)) -> ()
 
-let Bob = {Name = "Bob", Age = 12}
+let Bob = {Name = "Bob"; Age = 12}
 let Susan = {Bob with Name = "Susan"}
 let BobInWork = {Bob with Pupils = [Susan]}
 
@@ -71,12 +71,14 @@ let getName p = p.Name
 let getFirstPupil t = head <| t.Pupils
 
 let typeTest () =
-    let n1 = getName Bob
-    let n2 = getName BobInWork
-    //let fp1 = getFirstPupil Bob -- error: getFirstPupil requires additional property 'Pupils' to be present in record `t`
-    let fp2 = getFirstPupil BobInWork
+    let n1 = getName(Bob)
+    let n2 = getName(BobInWork)
+    //let fp1 = getFirstPupil(Bob) -- error: getFirstPupil requires additional property 'Pupils' to be present in record `t`
+    let fp2 = getFirstPupil(BobInWork)
     //error: let cannot be the last expression
 
-let main = 
+@main :: [String] -> Integer
+let main args = 
     let i = System.Console.Read() :: Integer
-    do System.Console.WriteLine <| toString (i+1)
+    do System.Console.WriteLine <| toString(i + 1)
+    System.NoError

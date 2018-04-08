@@ -7,139 +7,174 @@ import Prelude hiding (maybe)
 import qualified Data.Maybe
 
 import Control.Monad
-import Text.Parsec hiding (token, spaces)
+import Text.Parsec
 import Text.Parsec.String
+import qualified Text.Parsec.Token as Tok
+import Text.Parsec.Language
 import Data.Functor.Identity
 
-parseFile :: ParsecT String () Identity Program -> String -> String -> Either ParseError Program
-parseFile p filename contents = parse p filename contents
+lexer :: Stream s m Char => Tok.GenTokenParser s u m
+lexer = Tok.makeTokenParser $ emptyDef{
+            Tok.commentStart = "(*",
+            Tok.commentEnd = "*)",
+            Tok.commentLine = "//",
+            Tok.nestedComments = True,
+            Tok.identStart = letter <|> char '_',
+            Tok.identLetter = alphaNum <|> char '_',
+            Tok.opStart = oneOf ":!#$%&*+/<=>?\\^|-~",
+            Tok.opLetter = oneOf ":!#$%&*+./<=>?@\\^|-~",
+            Tok.reservedNames = [
+                "let", "with", "in", "match", "type",
+                "data", "if", "then", "else", "do"
+              ],
+            Tok.reservedOpNames = [
+                "(", ")", "_", "=", "@", "::", ",", "{",
+                "}", ";", "|", "->", "[", "]", "()",
+                ".", "..", "\\", "<-", "..."
+              ]
+        }
+
+symbol :: Stream s m Char => String -> ParsecT s u m String
+symbol = Tok.symbol lexer
+parens :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
+parens = Tok.parens lexer
+braces :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
+braces = Tok.braces lexer
+angles :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
+angles = Tok.angles lexer
+brackets :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
+brackets = Tok.brackets lexer
+semi :: Stream s m Char => ParsecT s u m String
+semi = Tok.semi lexer
+comma :: Stream s m Char => ParsecT s u m String
+comma = Tok.comma lexer
+colon :: Stream s m Char => ParsecT s u m String
+colon = Tok.colon lexer
+dot :: Stream s m Char => ParsecT s u m String
+dot = Tok.dot lexer
+integer :: Stream s m Char => ParsecT s u m Integer
+integer = Tok.integer lexer
+float :: Stream s m Char => ParsecT s u m Double
+float = Tok.float lexer
+stringLiteral :: Stream s m Char => ParsecT s u m String
+stringLiteral = Tok.stringLiteral lexer
+charLiteral :: Stream s m Char => ParsecT s u m Char
+charLiteral = Tok.charLiteral lexer
+identifier :: Stream s m Char => ParsecT s u m String
+identifier = Tok.identifier lexer
+reserved :: Stream s m Char => String -> ParsecT s u m ()
+reserved = Tok.reserved lexer
+operator :: Stream s m Char => ParsecT s u m String
+operator = Tok.operator lexer
+reservedOp :: Stream s m Char => String -> ParsecT s u m ()
+reservedOp = Tok.reservedOp lexer
+whiteSpace :: Stream s m Char => ParsecT s u m ()
+whiteSpace = Tok.whiteSpace lexer
+
+---
+
+parseFile filename contents = parse pProgram filename contents
 
 pProgram :: Stream s m Char => ParsecT s u m Program
-pProgram = endBy pDeclaration newlines1 >>= return . Program
+pProgram = whiteSpace *> many pDeclaration >>= return . Program
+
+--- DECLARATIONS ---
 
 pDeclaration :: Stream s m Char => ParsecT s u m Declaration
-pDeclaration = 
-    pTypeDeclaration
-      <|> pDataTypeDeclaration
-      <|> pTypeAnnotation
-      <|> pValueDeclaration
+pDeclaration =
+    pTypeDeclaration <|> pDataTypeDeclaration
+    <|> pTypeAnnotation <|> pValueDeclaration
 
 pTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pTypeDeclaration = do
-    lbtoken "type"
+    reserved "type"
     typeId <- pIdentifier
-    typeGenericIdList <- option [] pTypeIdentifierList
-    typeDef <- pTypeDefinition
-    return (TypeDeclaration typeId typeGenericIdList typeDef)
+    param <- pTypeParam
+    td <- pTypeDefinition
+    return (TypeDeclaration typeId param td)
+
+pTypeParam :: Stream s m Char => ParsecT s u m TypeParam
+pTypeParam = do
+    mp <- maybe $ angles $ sepBy1 (pIdentifier >>= return . TypeIdentifier) comma
+    case mp of
+        Nothing -> return EmptyTypeParam
+        Just ps -> return (TypeParam ps)
+
+pTypeDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
+pTypeDefinition = try pTDAlias <|> pTDRec <|> pTDExt
+
+pTDAlias :: Stream s m Char => ParsecT s u m TypeDefinition
+pTDAlias = do
+    reservedOp "="
+    pType >>= return . TDAlias
+
+pTDRec :: Stream s m Char => ParsecT s u m TypeDefinition
+pTDRec = do
+    reservedOp "="
+    braces (sepBy1 pRecordFieldType semi) >>= return . TDRecord
+
+pTDExt :: Stream s m Char => ParsecT s u m TypeDefinition
+pTDExt = do
+    reserved "extends"
+    id <- pIdentifier
+    reserved "with"
+    recs <- braces (sepBy1 pRecordFieldType semi)
+    return (TDExtension id recs)
+
+pRecordFieldType :: Stream s m Char => ParsecT s u m RecordFieldType
+pRecordFieldType = do
+    id <- pIdentifier
+    reservedOp "::"
+    t <- pType
+    return (RecordFieldType id t)
 
 pDataTypeDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pDataTypeDeclaration = do
-    lbtoken "data"
-    typeId <- pIdentifier
-    typeGenericIdList <- option [] pTypeIdentifierList
-    rbtoken "="
-    unionDefinition <- pUnionDefinitionList
-    return (DataTypeDeclaration typeId typeGenericIdList unionDefinition)
+    reserved "data"
+    id <- pIdentifier
+    param <- pTypeParam
+    reservedOp "="
+    maybe (reservedOp "|")
+    u <- sepBy1 pUnionDef (reservedOp "|")
+    return (DataTypeDeclaration id param u)
+
+pUnionDef :: Stream s m Char => ParsecT s u m UnionDefinition
+pUnionDef = do
+    id <- pIdentifier
+    mu <- maybe (reserved "of" >> pType)
+    case mu of
+        Nothing -> return (UDEnum id)
+        Just t -> return (UDTyped id t)
 
 pTypeAnnotation :: Stream s m Char => ParsecT s u m Declaration
 pTypeAnnotation = do
-    rtoken "@"
-    valueId <- pIdentifier 
-    token "::"
-    type_ <- pType
-    return (TypeAnnotation valueId type_)
+    reservedOp "@"
+    id <- pIdentifier
+    reservedOp "::"
+    t <- pType
+    return (TypeAnnotation id t)
 
 pValueDeclaration :: Stream s m Char => ParsecT s u m Declaration
 pValueDeclaration = do
-    lbtoken "let"
-    bind <- pBindPattern <?> "identifier"
-    rbtoken "="
+    reserved "let"
+    bind <- pBindPattern
+    reservedOp "="
     expr <- pExpression
     return (ValueDeclaration bind expr)
 
-pTypeDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
-pTypeDefinition = pTypeAssignment <|> pTypeExtension
-
-pTypeAssignment :: Stream s m Char => ParsecT s u m TypeDefinition
-pTypeAssignment = do
-    rbtoken "="
-    pRecordTypeDefinition 
-      <|> pAliasDefinition 
-
-pTypeExtension :: Stream s m Char => ParsecT s u m TypeDefinition
-pTypeExtension = do
-    token "extends" 
-    typeId <- pIdentifier
-    token "with"
-    rd <- pRecordTypeDefinition
-    case rd of
-        TDRecord rd_ -> return (TDExtension typeId rd_)
-
-pRecordTypeDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
-pRecordTypeDefinition = do
-    rbtoken "{"
-    rd <- pRecordFieldTypeDefinitionList
-    lbtoken "}"
-    return (TDRecord rd)
-
-pRecordFieldTypeDefinitionList :: Stream s m Char => ParsecT s u m [RecordTypeDefinition]
-pRecordFieldTypeDefinitionList = sepBy1 (
-        do
-            fieldId <- pIdentifier
-            token "::"
-            t <- pType
-            return (RecordTypeDefinition fieldId t)
-    ) comma
-
-pAliasDefinition :: Stream s m Char => ParsecT s u m TypeDefinition
-pAliasDefinition = pType >>= return . TDAlias
-
-pUnionDefinitionList :: Stream s m Char => ParsecT s u m [UnionDefinition]
-pUnionDefinitionList = do
-    _ <- maybe $ token "|"
-    pUnionElementDefinition `sepBy1` (lbtoken "|")
-
-pUnionElementDefinition :: Stream s m Char => ParsecT s u m UnionDefinition
-pUnionElementDefinition =
-    try pUnionElementWithDataDefinition 
-      <|> (pIdentifier >>= return . UnionDefinitionEnum)
-
-pUnionElementWithDataDefinition :: Stream s m Char => ParsecT s u m UnionDefinition 
-pUnionElementWithDataDefinition = do
-    id <- pIdentifier
-    token "of"
-    t <- pType
-    return (UnionDefinitionTyped id t)
+--- TYPE ---
 
 pType :: Stream s m Char => ParsecT s u m Type
 pType = do
-    t1 <- pConciseType
-    mt2 <- maybe (try (pTupleType t1) <|> try (pFunctionType t1))
+    t <- pConciseType
+    mt2 <- maybe (pTupleType t <|> pFunctionType t)
     case mt2 of
-        Nothing -> return t1
+        Nothing -> return t
         Just t2 -> return t2
 
-pConciseType :: Stream s m Char => ParsecT s u m Type
-pConciseType = 
-    try pUnitType
-      <|> try pNamedType
-      <|> try (parenthesis pType >>= return . TParenthesis)
-      <|> try pListType
-      <|> try pRecordType
-
-pUnitType :: Stream s m Char => ParsecT s u m Type
-pUnitType = token "()" >> return (TUnit)
-
-pListType :: Stream s m Char => ParsecT s u m Type
-pListType = do
-    token "["
-    t <- pType
-    token "]"
-    return (TList t)
-    
 pTupleType :: Stream s m Char => Type -> ParsecT s u m Type
 pTupleType t1 = do
-    token "*"
+    whiteSpace *> symbol "*"
     t2 <- pType
     case t2 of
         TTuple tl -> return (TTuple (t1:tl))
@@ -147,274 +182,317 @@ pTupleType t1 = do
 
 pFunctionType :: Stream s m Char => Type -> ParsecT s u m Type
 pFunctionType t1 = do
-    token "->"
+    reservedOp "->"
     t2 <- pType
     return (TFunction t1 t2)
+
+pConciseType :: Stream s m Char => ParsecT s u m Type
+pConciseType = 
+    pNamedType
+        <|> try pUnitType
+        <|> (parens pType >>= return . TParenthesis)
+        <|> pListType
+        <|> pRecordType
+
+pUnitType :: Stream s m Char => ParsecT s u m Type
+pUnitType = reservedOp "()" >> return TUnit
 
 pNamedType :: Stream s m Char => ParsecT s u m Type
 pNamedType = do
     id <- pIdentifier
-    types <- option [] pGenericTypeArgumentsList
-    return (TByName id types)
+    params <- pExactTypeParam
+    return (TByName id params)
+
+pExactTypeParam :: Stream s m Char => ParsecT s u m ExactTypeParam
+pExactTypeParam = do
+    m <- maybe $ angles $ sepBy1 pType comma
+    case m of
+        Nothing -> return ExEmptyTypeParam
+        Just ts -> return (ExTypeParam ts)
+
+pListType :: Stream s m Char => ParsecT s u m Type
+pListType = brackets pType >>= return . TList
 
 pRecordType :: Stream s m Char => ParsecT s u m Type
-pRecordType = do
-    rd <- pRecordTypeDefinition
-    case rd of
-        TDRecord rd_ -> return (TRecord rd_)
+pRecordType = 
+    braces (sepBy1 pRecordFieldType semi) >>= return . TRecord
 
-
-
-
--- pExpression :: Stream s m Char => ParsecT s u m Expression
--- pExpression = do
---     e1 <- pConciseExpression
---     me2 <- maybe (pDotExpr e1 <|> pWithTypeExpr e1 <|> pInfixOpExpr e1 <|> pApplicationExpr e1)
---     case me2 of
---         Nothing -> return e1
---         Just e2 -> return e2
-
-pConciseExpression :: Stream s m Char => ParsecT s u m Expression
-pConciseExpression = 
-    pNegativeExpr <|> pLetExpr {-<|> TODO pMatchExpr-}
-     <|> pLiteral <|> pVariableExpr <|>
-     pDoExpr <|> try pTupleExpr <|> pListExpr <|>
-     pRecordExpr <|> pIfThenElseExpr <|> (parenthesis pExpression >>= return . EParenthesis) <|> pLambdaExpr
-
-pNegativeExpr :: Stream s m Char => ParsecT s u m Expression
-pNegativeExpr = do
-    token "-"
-    e <- pExpression
-    return (ENegative e)
-
-pLetExpr :: Stream s m Char => ParsecT s u m Expression
-pLetExpr = do
-    lbtoken "let"
-    bp <- pBindPattern
-    rbtoken "="
-    e1 <- pExpression
-    rbtoken "in" <|> newlines1
-    e2 <- pExpression
-    return (ELet bp e1 e2)
-
-pLiteral :: Stream s m Char => ParsecT s u m Expression
-pLiteral = (pStringLiteral <|> pNumLiteral <|> pCharLiteral) >>= return . ELiteral
-
-pStringLiteral :: Stream s m Char => ParsecT s u m Literal
-pStringLiteral = do
-    rtoken "\""
-    str <- manyTill pReadChar (ltoken "\"")
-    return (LString str)
-
-pReadChar :: Stream s m Char => ParsecT s u m Char
-pReadChar = pReadEscapedChar <|> anyChar
-pReadEscapedChar :: Stream s m Char => ParsecT s u m Char
-pReadEscapedChar = do
-    string "\\"
-    c <- anyChar
-    case c of
-        'n' -> return '\n'
-        't' -> return '\t'
-        '\\' -> return '\\'
-        _ -> unexpected "invalid escape sequence"
-
-pNumLiteral :: Stream s m Char => ParsecT s u m Literal
-pNumLiteral = do
-    num1 <- many1 digit
-    mn2 <- maybe (string "." *> many1 digit)
-    case mn2 of
-        Nothing -> return . LInteger $ (read num1 :: Integer)
-        Just num2 -> return . LFloat $ (read (num1 ++ "." ++ num2) :: Double)
-
-pCharLiteral :: Stream s m Char => ParsecT s u m Literal
-pCharLiteral = do
-    rtoken "'"
-    c <- pReadChar
-    ltoken "'"
-    return (LChar c)
-
-pVariableExpr :: Stream s m Char => ParsecT s u m Expression
-pVariableExpr = pIdentifier >>= return . EVariable
-
-pDoExpr :: Stream s m Char => ParsecT s u m Expression
-pDoExpr = do
-    lbtoken "do"
-    e <- pExpression
-    return (EDo e)
-
-pIfThenElseExpr :: Stream s m Char => ParsecT s u m Expression
-pIfThenElseExpr = do
-    lbtoken "if"
-    cond <- pExpression
-    lbtoken "then"
-    tr <- pExpression
-    lbtoken "else"
-    fl <- pExpression
-    return (EIf cond tr fl)
-
-pLambdaExpr :: Stream s m Char => ParsecT s u m Expression
-pLambdaExpr = do
-    lbtoken "\\"
-    p <- endBy1 pParam whiteSpace
-    token "->"
-    body <- pExpression
-    return (ELambda p body)
-
-pTupleExpr :: Stream s m Char => ParsecT s u m Expression
-pTupleExpr = do
-    token "("
-    exps <- sepBy2 pExpression comma
-    token ")"
-    return (ETuple exps)
-
-pListExpr :: Stream s m Char => ParsecT s u m Expression
-pListExpr = do
-    token "["
-    e <- try pListCommaSeparated <|> try pRange <|> pComprehension
-    token "]"
-    return e
-    where
-        pListCommaSeparated :: Stream s m Char => ParsecT s u m Expression
-        pListCommaSeparated = sepBy pExpression comma >>= return . EList
-        pRange :: Stream s m Char => ParsecT s u m Expression
-        pRange = do
-            e1 <- pExpression
-            token ".."
-            e2 <- pExpression
-            return (EListRange e1 e2)
-        pComprehension :: Stream s m Char => ParsecT s u m Expression
-        pComprehension = do
-            e1 <- pExpression
-            token "|"
-            stms <- sepBy1 pStatement comma
-            return (EListComprehension e1 stms)
-        pStatement :: Stream s m Char => ParsecT s u m Statement
-        pStatement = do
-            bp <- pBindPattern
-            token "<-"
-            e <- pExpression
-            return (Statement bp e)
-
-pRecordExpr :: Stream s m Char => ParsecT s u m Expression
-pRecordExpr = do
-    token "{"
-    e <- try pWithRec <|> pNewRec
-    token "}"
-    return e
-    where
-        pWithRec :: Stream s m Char => ParsecT s u m Expression
-        pWithRec = do
-            var <- pIdentifier
-            rbtoken "with"
-            ERecordConstruction recs <- pNewRec
-            return (ERecordUpdate var recs)
-        pNewRec :: Stream s m Char => ParsecT s u m Expression
-        pNewRec = sepBy1 pFieldAssignment comma >>= return . ERecordConstruction
-        pFieldAssignment :: Stream s m Char => ParsecT s u m RecordValue
-        pFieldAssignment = do
-            id <- pIdentifier
-            token "="
-            e <- pExpression
-            return (RecordValue id e)
+--- EXPRESSION ---
 
 pExpression :: Stream s m Char => ParsecT s u m Expression
-pExpression = pOpExpression [PipeLevel, ComparisonLevel, SubArithmetic, Arithmetic1, Arithmetic2, Arithmetic3]
+pExpression = pOpExpr definedOperators
 
-pOpExpression :: Stream s m Char => [OpLevel] -> ParsecT s u m Expression
-pOpExpression (x:y:xs) = do
-    e1 <- pOpExpression (y:xs)
-    me2 <- maybe (pInfix e1)
-    case me2 of
-        Nothing -> return e1
-        Just e2 -> return e2
+pOpExpr :: Stream s m Char => [[String]] -> ParsecT s u m Expression
+pOpExpr (ops:t) = do
+    let continuation = case t of
+                        [] -> pDotExpr
+                        _ -> pOpExpr t
+    e1 <- continuation
+    option e1 (try $ pInfix e1 continuation)
     where
-        pInfix e1 = do
-            ops <- newlines *> pOp <* newlines
-            e2 <- pOpExpression (y:xs)
-            let ass = assoc ops
-            let op = Operator ops x
-            case ass of
-                LeftAssoc -> do
-                    me3 <- maybe (pInfix (EInfixOp e1 op e2))
-                    case me3 of
-                        Nothing -> return (EInfixOp e1 op e2)
-                        Just e3 -> return e3
+        pInfix e1 continuation = do
+            op <- whiteSpace *> pOp ops
+            e2 <- continuation
+            let opExpr = EOp e1 (Op op) e2
+            case assoc op of
+                LeftAssoc -> option opExpr (try $ pInfix opExpr continuation)
                 RightAssoc -> do
-                    me3 <- maybe (pInfix e2)
+                    me3 <- maybe (pInfix e2 continuation)
                     case me3 of
-                        Nothing -> return (EInfixOp e1 op e2)
-                        Just e3 -> return (EInfixOp e1 op e3)
-        pOp :: Stream s m Char => ParsecT s u m String
-        pOp =
-            lookup2 x definedOperators
-            $> Data.Maybe.maybe unexpectedOp 
-                (foldl (<|>) unexpectedOp . (map (try . string)))
-
-
-pOpExpression [x] = do
-    e1 <- pDotExpr
-    me2 <- maybe (pInfix e1)
-    case me2 of
-        Nothing -> return e1
-        Just e2 -> return e2
-    where
-        pInfix e1 = do
-            ops <- newlines *> pOp <* newlines
-            e2 <- pDotExpr
-            let ass = assoc ops
-            let op = Operator ops x
-            case ass of
-                LeftAssoc -> do
-                    me3 <- maybe (pInfix (EInfixOp e1 op e2))
-                    case me3 of
-                        Nothing -> return (EInfixOp e1 op e2)
-                        Just e3 -> return e3
-                RightAssoc -> do
-                    me3 <- maybe (pInfix e2)
-                    case me3 of
-                        Nothing -> return (EInfixOp e1 op e2)
-                        Just e3 -> return (EInfixOp e1 op e3)
-        pOp :: Stream s m Char => ParsecT s u m String
-        pOp =
-            lookup2 x definedOperators
-            $> Data.Maybe.maybe unexpectedOp
-                (foldl (<|>) unexpectedOp . (map (try . string)))
-
-unexpectedOp :: Stream s m Char => ParsecT s u m String
-unexpectedOp = unexpected "undefined operator"
+                        Nothing -> return opExpr
+                        Just e3 -> return (EOp e1 (Op op) e3)
+pOp :: Stream s m Char => [String] -> ParsecT s u m String
+pOp [] = operator
+pOp l = foldl (<|>) (unexpected "Op") $ map (try . symbol)  l
 
 pDotExpr :: Stream s m Char => ParsecT s u m Expression
 pDotExpr = do
-    e <- pWithTypeExpr
-    mi <- maybe (string "."  *> pIdentifier)
-    case mi of
-        Nothing -> return e
-        Just id -> return (ERecordField e id)
+    e <- pTypedExpr
+    inner e
+    where
+        inner :: Stream s m Char => Expression -> ParsecT s u m Expression
+        inner exp = do
+            mi <- maybe (string "." *> pIdentifier)
+            case mi of
+                Nothing -> return exp
+                Just id -> inner (ERecordField exp id)
 
-pWithTypeExpr :: Stream s m Char => ParsecT s u m Expression
-pWithTypeExpr = do
+pTypedExpr :: Stream s m Char => ParsecT s u m Expression
+pTypedExpr = do
     e <- pApplicationExpr
-    mt <- maybe (token "::" *> pType)
-    case mt of
-        Nothing -> return e
-        Just t -> return (EExpressionWithTypeSig e t)
+    option e (try (reservedOp "::" *> pType >>= return . (ETyped e)))
 
 pApplicationExpr :: Stream s m Char => ParsecT s u m Expression
 pApplicationExpr = do
-    e1 <- pConciseExpression
-    me2 <- maybe (whiteSpace *> pExpression)
-    case me2 of
-        Nothing -> return e1
-        Just e2 -> return (EApplication e1 e2)
+    e <- pConciseExpr
+    whiteSpace
+    inner e
+    where
+        inner :: Stream s m Char => Expression -> ParsecT s u m Expression
+        inner exp = do
+            me2 <- maybe ((parens $ sepBy1 pExpression comma) >>= return . (EApplication exp))
+            case me2 of
+                Nothing -> return exp
+                Just e2 -> inner e2
+
+pConciseExpr :: Stream s m Char => ParsecT s u m Expression
+pConciseExpr = 
+    pVarExpr <|> try pParensExpr <|> pLiteralExpr
+    <|> pNegativeExpr <|> pLetExpr <|> pDoExpr
+    <|> pTupleExpr <|> try pListSeqExpr <|> try pListComprehensionExpr
+    <|> pListExpr <|> try pRecordExpr <|> pRecordUpdateExpr
+    <|> try pIfExpr <|> pIfDoExpr <|> pLambdaExpr
+    <|> pMatchExpr
+    
+pNegativeExpr :: Stream s m Char => ParsecT s u m Expression
+pNegativeExpr = symbol "-" >> pExpression >>= return . ENegative
+
+pParensExpr :: Stream s m Char => ParsecT s u m Expression
+pParensExpr = parens pExpression >>= return . EParenthesis
+
+pVarExpr :: Stream s m Char => ParsecT s u m Expression
+pVarExpr = pIdentifier >>= return . EVariable
+
+pLetExpr :: Stream s m Char => ParsecT s u m Expression
+pLetExpr = do
+    reserved "let"
+    bp <- pBindPattern
+    reservedOp "="
+    eass <- pExpression
+    maybe (reserved "in")
+    eres <- pExpression
+    return (ELet bp eass eres)
+
+pLiteralExpr :: Stream s m Char => ParsecT s u m Expression
+pLiteralExpr = pLiteral >>= return . ELiteral
+
+pLiteral :: Stream s m Char => ParsecT s u m Literal
+pLiteral =
+    (stringLiteral >>= return . AST.String)
+     <|> (charLiteral >>= return . AST.Char)
+     <|> try (float >>= return . AST.Float)
+     <|> try (integer >>= return . AST.Integer)
+     <|> try (reservedOp "()" >> return UnitValue)
+
+pDoExpr :: Stream s m Char => ParsecT s u m Expression
+pDoExpr = 
+    reserved "do" >> pExpression >>= return . EDo
+
+pTupleExpr :: Stream s m Char => ParsecT s u m Expression
+pTupleExpr = 
+    parens (sepBy2 pExpression comma) >>= return . ETuple
+
+pListSeqExpr :: Stream s m Char => ParsecT s u m Expression
+pListSeqExpr = 
+    brackets inner
+    where
+        inner :: Stream s m Char => ParsecT s u m Expression
+        inner = do
+            e1 <- pExpression
+            reservedOp ".."
+            e2 <- pExpression
+            return (EListSequence e1 e2)
+
+pListComprehensionExpr :: Stream s m Char => ParsecT s u m Expression
+pListComprehensionExpr =
+    brackets inner
+    where
+        inner :: Stream s m Char => ParsecT s u m Expression
+        inner = do
+            eres <- pExpression
+            reservedOp "|"
+            comps <- sepBy1 pComprehension comma
+            return (EListComprehension eres comps)
+
+pListExpr :: Stream s m Char => ParsecT s u m Expression
+pListExpr = brackets (sepBy pExpression comma) >>= return . EList
+
+pRecordExpr :: Stream s m Char => ParsecT s u m Expression
+pRecordExpr =
+    braces (sepBy1 pRecordAssignment semi)
+     >>= return . ERecord
+
+pRecordAssignment :: Stream s m Char => ParsecT s u m RecordFieldAssignment
+pRecordAssignment = do
+    id <- pIdentifier
+    reservedOp "="
+    e <- pExpression
+    return (RecordFieldAssignment id e)
+
+pRecordUpdateExpr :: Stream s m Char => ParsecT s u m Expression
+pRecordUpdateExpr =
+    braces inner
+    where
+        inner :: Stream s m Char => ParsecT s u m Expression
+        inner = do
+            id <- pIdentifier
+            reserved "with"
+            fields <- sepBy1 pRecordAssignment semi
+            return (ERecordUpdate id fields)
+
+pIfExpr :: Stream s m Char => ParsecT s u m Expression
+pIfExpr = do
+    reserved "if"
+    econd <- pExpression
+    reserved "then"
+    etrue <- pExpression
+    reserved "else"
+    efalse <- pExpression
+    return (EIf econd etrue efalse)
+
+pIfDoExpr :: Stream s m Char => ParsecT s u m Expression
+pIfDoExpr = do
+    reserved "if"
+    econd <- pExpression
+    reserved "do"
+    e <- pExpression
+    return (EIfDo econd e)
+
+pLambdaExpr :: Stream s m Char => ParsecT s u m Expression
+pLambdaExpr = do
+    reservedOp "\\"
+    params <- many1 pParam
+    reservedOp "->"
+    e <- pExpression
+    return (ELambda params e)
+
+pMatchExpr :: Stream s m Char => ParsecT s u m Expression
+pMatchExpr = do
+    reserved "match"
+    em <- pExpression
+    reserved "with"
+    maybe (reservedOp "|")
+    alts <- sepBy1 pAlternate (reservedOp "|")
+    return (EMatch em alts)
+
+pAlternate :: Stream s m Char => ParsecT s u m Alternate
+pAlternate = do
+    pat <- pPattern
+    reservedOp "->"
+    e <- pExpression
+    return (Alternate pat e)
+
+pComprehension :: Stream s m Char => ParsecT s u m Comprehension
+pComprehension = do
+    bp <- pBindPattern
+    reservedOp "<-"
+    e <- pExpression
+    return (Comprehension bp e)
+
+--- PATTERN ---
+
+pPattern :: Stream s m Char => ParsecT s u m Pattern
+pPattern = 
+    try pApplicationPat <|> pLiteralPat <|> try pWildCardPat
+    <|> try pTuplePat <|> try pListHeadPat <|> pParensPat
+    <|> pVarPat <|> try pListPat <|> pListContainsPat
+    <|> pRecordPat
+
+pVarPat :: Stream s m Char => ParsecT s u m Pattern
+pVarPat = pIdentifier >>= return . PVariable
+
+pApplicationPat :: Stream s m Char => ParsecT s u m Pattern
+pApplicationPat = do
+    id <- pIdentifier
+    pat <- parens pPattern
+    return (PApplication id pat)
+
+pLiteralPat :: Stream s m Char => ParsecT s u m Pattern
+pLiteralPat = pLiteral >>= return . PLiteral
+
+pTuplePat :: Stream s m Char => ParsecT s u m Pattern
+pTuplePat = parens (sepBy2 pPattern comma) >>= return . PTuple
+
+pListPat :: Stream s m Char => ParsecT s u m Pattern
+pListPat = brackets (sepBy pPattern comma) >>= return . PList
+
+pListHeadPat :: Stream s m Char => ParsecT s u m Pattern
+pListHeadPat = parens inner
+    where
+        inner :: Stream s m Char => ParsecT s u m Pattern
+        inner = do
+            phead <- pPattern
+            whiteSpace *> symbol ":"
+            ptail <- pPattern
+            return (PListHead phead ptail)
+
+pParensPat :: Stream s m Char => ParsecT s u m Pattern
+pParensPat = parens pPattern >>= return . PParenthesis
+
+pWildCardPat :: Stream s m Char => ParsecT s u m Pattern
+pWildCardPat = symbol "_" >> return PWildCard
+
+pListContainsPat :: Stream s m Char => ParsecT s u m Pattern
+pListContainsPat = brackets inner
+    where
+        inner :: Stream s m Char => ParsecT s u m Pattern
+        inner = do
+            reservedOp "..."
+            e <- pExpression
+            reservedOp "..."
+            return (PListContains e)
+
+pRecordPat :: Stream s m Char => ParsecT s u m Pattern
+pRecordPat = 
+    braces (sepBy1 pRecordAssignmentPat semi) >>= return . PRecord
+
+pRecordAssignmentPat :: Stream s m Char => ParsecT s u m RecordPattern
+pRecordAssignmentPat = do
+    id <- pIdentifier
+    reservedOp "="
+    p <- pPattern
+    return (RecordPattern id p)
+
+--- BIND PATTERN ---
 
 pBindPattern :: Stream s m Char => ParsecT s u m BindPattern
 pBindPattern =
     try pBindParenthesis
-      <|> pBindOp
-      <|> pBindRecord
-      <|> pBindList
-      <|> (try (rtoken "_" <* oneOf " \t") >> return BWildCard)
-      <|> (do
+        <|> pBindOp
+        <|> pBindRecord
+        <|> pBindList
+        <|> (reservedOp "_" >> return BWildCard)
+        <|> (do
             id <- pIdentifier
             r <- maybe $ pBindFunctionDecl id
             case r of
@@ -424,29 +502,25 @@ pBindPattern =
 
 pBindFunctionDecl :: Stream s m Char => Identifier -> ParsecT s u m BindPattern
 pBindFunctionDecl id = do
-    whiteSpace
-    r <- endBy1 pParam whiteSpace
+    r <- many1 pParam
     return (BFunctionDecl id r)
 
 pParam :: Stream s m Char => ParsecT s u m Param
 pParam =
-    (string "()" >> return Unit)
-      <|> try (string "_" <* notFollowedBy pIdentifier  >> return WildCard)
-      <|> (pIdentifier >>= return . Parameter)
+    (reservedOp "()" >> return Unit)
+        <|> (reservedOp "_"  >> return WildCard)
+        <|> (pIdentifier >>= return . Parameter)
 
 pBindParenthesis :: Stream s m Char => ParsecT s u m BindPattern
-pBindParenthesis = do
-    token "("
-    b <- try pBindListHead
+pBindParenthesis =
+    parens $ try pBindListHead
             <|> try pBindTuple
             <|> (pBindPattern >>= return . BParenthesis)
-    token ")"
-    return b
     where
         pBindListHead :: Stream s m Char => ParsecT s u m BindPattern
         pBindListHead = do
             b1 <- pBindPattern
-            token ":"
+            symbol ":"
             b2 <- pBindPattern
             return (BListHead b1 b2)
 
@@ -455,122 +529,28 @@ pBindParenthesis = do
 
 pBindOp :: Stream s m Char => ParsecT s u m BindPattern
 pBindOp = do
-    token "("
-    op <- pOperator
-    token ")"
-    r <- endBy1 pParam whiteSpace
-    return (BOpDecl op r)
+    op <- parens operator >>= return . Op
+    r <- many1 pParam
+    return (BOp op r)
 
 pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
-pBindRecord = do
-    token "{"
-    rd <- sepBy1 pBindRecordElem comma
-    token "}"
-    return (BRecord rd)
+pBindRecord =
+    (braces $ sepBy1 pBindRecordElem comma) >>= return . BRecord
     where
         pBindRecordElem :: Stream s m Char => ParsecT s u m RecordBindPattern
         pBindRecordElem = do
             id <- pIdentifier
-            token "->"
-            varId <- pIdentifier
-            return (RecordBindPatternElem id varId)
+            symbol "->"
+            varId <- pBindPattern
+            return (RecordBindPattern id varId)
 
 pBindList :: Stream s m Char => ParsecT s u m BindPattern
-pBindList = do
-    token "["
-    rd <- sepBy pIdentifier comma
-    token "]"
-    return (BList rd)
+pBindList =
+    (brackets $ sepBy pBindPattern comma) >>= return . BList
 
-
-pOperator :: Stream s m Char => ParsecT s u m Op
-pOperator = do
-    opLiteral <- many1 $ oneOf "<>?/|:+=-*&^%$#!~"
-    let level = findIn definedOperators opLiteral
-    case level of
-        Nothing -> return (Operator opLiteral SubArithmetic)
-        Just l -> return (Operator opLiteral l)
-
-    where
-        findIn :: [([String], OpLevel)] -> String -> Maybe OpLevel
-        findIn [] lit = Nothing
-        findIn (x:xs) lit | elem lit (fst x) = Just $ snd x
-                          | otherwise = findIn xs lit
-
-pGenericTypeArgumentsList :: Stream s m Char => ParsecT s u m [Type]
-pGenericTypeArgumentsList = do
-    ltoken "<"
-    identifiers <- sepBy1 pType comma
-    rtoken ">"
-    return identifiers
-
-pTypeIdentifierList :: Stream s m Char => ParsecT s u m [TypeIdentifier]
-pTypeIdentifierList = do
-    ltoken "<"
-    identifiers <- sepBy1 pTypeIdentifier comma
-    rtoken ">"
-    return identifiers
 
 pIdentifier :: Stream s m Char => ParsecT s u m Identifier
-pIdentifier = 
-    startWithOneContinueWithMany (letter <|> char '_') (letter <|> digit <|> char '_')
-      >>= return . Identifier
-
-pTypeIdentifier :: Stream s m Char => ParsecT s u m TypeIdentifier
-pTypeIdentifier =
-    startWithOneContinueWithMany letter (letter <|> digit)
-      >>= return . TypeIdentifier
-
-pComment :: Stream s m Char => ParsecT s u m String
-pComment = string "//" <* manyTill anyToken (string "\n")
-       <|> string "(*" <* manyTill anyToken (string "*)")
-
-whiteSpace :: Stream s m Char => ParsecT s u m ()
-whiteSpace = void $ (many $ ((try pComment) <|> string " " <|> string "\t" <?> "whitespace"))
-
--- spaces :: Stream s m Char => ParsecT s u m ()
--- spaces = void $ many $ ((string " " <|> string "\t") <?> "whitespace")
-
-newlines :: Stream s m Char => ParsecT s u m ()
-newlines = _newlines many
-
-newlines1 :: Stream s m Char => ParsecT s u m ()
-newlines1 = _newlines many1
-
-_newlines :: Stream s m Char => (ParsecT s u m String -> ParsecT s u m [String]) -> ParsecT s u m ()    
-_newlines combinator = void $ whiteSpace *> ((combinator $ (string "\n")) <?> "a new line")
-                 
-
-comma :: Stream s m Char => ParsecT s u m ()
-comma = rbtoken ","
-
-ltoken :: Stream s m Char => String -> ParsecT s u m ()
-ltoken s = void $ string s <* whiteSpace
-
-rtoken :: Stream s m Char => String -> ParsecT s u m ()
-rtoken s = void $ whiteSpace *> string s
-
-token :: Stream s m Char => String -> ParsecT s u m ()
-token s = void $ whiteSpace *> string s <* whiteSpace
-
-rbtoken :: Stream s m Char => String -> ParsecT s u m ()
-rbtoken s = void $ whiteSpace *> string s <* newlines <* whiteSpace
-
-lbtoken :: Stream s m Char => String -> ParsecT s u m ()
-lbtoken s = void $ (try $ newlines *> whiteSpace *> string s) <* whiteSpace
-
-asArray :: Stream s m Char => a -> ParsecT s u m [a]
-asArray = return . (:[])
-
-startWithOneContinueWithMany :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a -> ParsecT s u m [a]
-startWithOneContinueWithMany one_ many_ = (++) <$> (one_ >>= asArray) <*> many many_
-
-parenthesis :: Stream s m Char => ParsecT s u m a -> ParsecT s u m a
-parenthesis p = do
-    token "("
-    res <- p
-    token ")"
-    return res
+pIdentifier = identifier >>= return . Identifier
 
 sepBy2 :: Stream s m Char => ParsecT s u m a -> ParsecT s u m b -> ParsecT s u m [a]
 sepBy2 p sep = do
@@ -584,24 +564,20 @@ maybe :: Stream s m Char => ParsecT s u m a -> ParsecT s u m (Maybe a)
 maybe p = option Nothing (try p >>= return . Just)
 
 definedOperators = [
-    (["<|","<||","<|||","|>","||>","|||>",
-      "<$>", "<$", "$>"], PipeLevel),
-    (["<", "<=", "==", "===", ">", ">=",
-      "!=", "/=", "=/=", "!==", "/=="], ComparisonLevel),
-    (["||", "<<", ">>", "<=>", "<==", "==>", ">=>", "<=<", "~>", "<~", "<<=", "=>>", "=<<", ">>="], SubArithmetic),
-    (["+", "-","&&"], Arithmetic1),
-    (["*", "/"], Arithmetic2),
-    (["**", "***", "%", "^", "&", "|", "++", "--"], Arithmetic3)
+    [],
+    ["<|","<||","<|||","|>","||>","|||>",
+      "<$>", "<$", "$>"],
+    ["<", "<=", "==", "===", ">", ">=",
+      "!=", "/=", "=/=", "!==", "/=="],
+    ["||", "<<", ">>", "<=>", "<==", "==>", ">=>", "<=<", "~>", "<~", "<<=", "=>>", "=<<", ">>="],
+    ["+", "-","&&"],
+    ["*", "/"],
+    ["**", "***", "%", "^", "&&&", "&", "|||", "++", "--"]
   ]
+
+data OpAssoc = LeftAssoc | RightAssoc
 
 assoc op =
     let d = ["<|","<||","<|||","<$","<$>","<<=","<==",
-             "=<<","<=<","<~","<<","**","***"] in
+            "=<<","<=<","<~","<<","**","***"] in
         if elem op d then RightAssoc else LeftAssoc
-
-lookup2 x [] = Nothing
-lookup2 x ((a,b):xs) | x == b = Just a
-                     | otherwise = lookup2 x xs
-
-
-($>) a b = b $ a

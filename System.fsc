@@ -32,4 +32,6 @@ type System =
     {
         Console :: Stream
         IO :: IO
+        NoError :: Integer
+        Error :: String -> Integer
     }
