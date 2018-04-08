@@ -225,7 +225,7 @@ pExpression = pOpExpr definedOperators
 pOpExpr :: Stream s m Char => [[String]] -> ParsecT s u m Expression
 pOpExpr (ops:t) = do
     let continuation = case t of
-                        [] -> pDotExpr
+                        [] -> pTypedExpr
                         _ -> pOpExpr t
     e1 <- continuation
     option e1 (try $ pInfix e1 continuation)
@@ -247,7 +247,7 @@ pOp l = foldl (<|>) (unexpected "Op") $ map (try . symbol)  l
 
 pDotExpr :: Stream s m Char => ParsecT s u m Expression
 pDotExpr = do
-    e <- pTypedExpr
+    e <- pConciseExpr
     inner e
     where
         inner :: Stream s m Char => Expression -> ParsecT s u m Expression
@@ -264,7 +264,7 @@ pTypedExpr = do
 
 pApplicationExpr :: Stream s m Char => ParsecT s u m Expression
 pApplicationExpr = do
-    e <- pConciseExpr
+    e <- pDotExpr
     whiteSpace
     inner e
     where
@@ -315,8 +315,12 @@ pLiteral =
      <|> try (reservedOp "()" >> return UnitValue)
 
 pDoExpr :: Stream s m Char => ParsecT s u m Expression
-pDoExpr = 
-    reserved "do" >> pExpression >>= return . EDo
+pDoExpr = do
+    reserved "do" 
+    edo <- pExpression 
+    maybe (reserved "in")
+    econt <- pExpression
+    return (EDo edo econt)
 
 pTupleExpr :: Stream s m Char => ParsecT s u m Expression
 pTupleExpr = 
@@ -385,8 +389,9 @@ pIfDoExpr = do
     reserved "if"
     econd <- pExpression
     reserved "do"
-    e <- pExpression
-    return (EIfDo econd e)
+    edo <- pExpression
+    econt <- pExpression
+    return (EIfDo econd edo econt)
 
 pLambdaExpr :: Stream s m Char => ParsecT s u m Expression
 pLambdaExpr = do
@@ -530,7 +535,7 @@ pBindParenthesis =
 pBindOp :: Stream s m Char => ParsecT s u m BindPattern
 pBindOp = do
     op <- parens operator >>= return . Op
-    r <- many1 pParam
+    r <- many pParam
     return (BOp op r)
 
 pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
@@ -579,5 +584,5 @@ data OpAssoc = LeftAssoc | RightAssoc
 
 assoc op =
     let d = ["<|","<||","<|||","<$","<$>","<<=","<==",
-            "=<<","<=<","<~","<<","**","***"] in
+            "=<<","<=<","<~","<<","**","***", ":"] in
         if elem op d then RightAssoc else LeftAssoc

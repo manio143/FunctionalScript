@@ -4,34 +4,37 @@
  * functions with side effects.
  *)
 
-type Maybe a = None | Some a
+data List<a> = Empty | Head of (a * List<a>)
+let (:) h t = Head((h,t))
+
+type Maybe<a> = None | Some of a
 
 @toString :: a -> String
 
 type Stream =
     {
-        ReadLine :: () -> String
-        ReadChar :: () -> Char
-        ReadLazy :: () -> String
-        Read :: () -> a
-        ReadMaybe :: () -> Maybe a
+        ReadLine :: () -> String    ;
+        ReadChar :: () -> Char      ;
+        ReadLazy :: () -> String    ;
+        Read :: () -> a             ;
+        ReadMaybe :: () -> Maybe<a> ;
 
-        WriteLine :: String -> ()
-        WriteChar :: Char -> ()
+        WriteLine :: String -> ()   ;
+        WriteChar :: Char -> ()     ;
         Write :: a -> ()
     }
 
 type IO =
     {
-        OpenFile :: String -> Stream
-        CloseFile :: String -> ()
-        CreateInMemoryStream :: [Char] -> Stream
+        OpenFile :: String -> Stream             ;
+        CloseFile :: String -> ()                ;
+        CreateInMemoryStream :: [Char] -> Stream ;
     }
 
 type System = 
     {
-        Console :: Stream
-        IO :: IO
-        NoError :: Integer
-        Error :: String -> Integer
+        Console :: Stream          ;
+        IO :: IO                   ;
+        NoError :: Integer         ;
+        Error :: String -> Integer ;
     }

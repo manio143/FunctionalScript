@@ -66,7 +66,7 @@ module AST where
       | ELet BindPattern Expression Expression
       | ELiteral Literal
       | EVariable Identifier
-      | EDo Expression
+      | EDo Expression Expression
       | EParenthesis Expression
       | ETuple [Expression]
       | EListSequence Expression Expression
@@ -75,7 +75,7 @@ module AST where
       | ERecord [RecordFieldAssignment]
       | ERecordUpdate Identifier [RecordFieldAssignment]
       | EIf Expression Expression Expression
-      | EIfDo Expression Expression
+      | EIfDo Expression Expression Expression
       | ELambda [Param] Expression
       | EMatch Expression [Alternate]
     deriving (Eq, Ord, Show, Read)

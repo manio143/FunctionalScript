@@ -106,14 +106,14 @@ EOpLeftSubArithmetic.   Expression6 ::= Expression7 OpLeftSubArithmetic Expressi
 EOpArithmeticF.         Expression7 ::= Expression7 OpArithmeticF Expression8 ;
 EOpArithmeticS.         Expression8 ::= Expression8 OpArithmeticS Expression9 ;
 EOpArithmeticT.         Expression9 ::= Expression10 OpArithmeticT Expression9 ;
-ERecordField.           Expression10 ::= Expression11 "." Identifier ;
-ETyped.                 Expression11 ::= Expression12 "::" Type ;
-EApplication.           Expression12 ::= Expression12 "("  [Expression] ")";
+ETyped.                 Expression10 ::= Expression11 "::" Type ;
+EApplication.           Expression11 ::= Expression11 "("  [Expression] ")";
+ERecordField.           Expression12 ::= Expression12 "." Identifier ;
 ENegative.              Expression13 ::= "-" Expression ;
 ELet.                   Expression13 ::= LetToken BindPattern "=" Expression LetContinuation Expression ;
 ELiteral.               Expression13 ::= Literal ;
 EVariable.              Expression13 ::= Identifier ;
-EDo.                    Expression13 ::= "do" Expression ;
+EDo.                    Expression13 ::= "do" Expression LetContinuation Expression;
 EParenthesis.           Expression13 ::= "(" Expression ")" ;
 ETuple.                 Expression13 ::= "(" [Expression] ")" ;
 EListSequence.          Expression13 ::= "[" Expression ".." Expression "]" ;
@@ -122,7 +122,7 @@ EList.                  Expression13 ::= "[" [Expression] "]" ;
 ERecord.                Expression13 ::= "{" [RecordFieldAssignment] "}" ;
 ERecordUpdate.          Expression13 ::= "{" Identifier "with" [RecordFieldAssignment] "}" ;
 EIf.                    Expression13 ::= "if" Expression "then" Expression "else" Expression ;
-EIfDo.                  Expression13 ::= "if" Expression "do" Expression ;
+EIfDo.                  Expression13 ::= "if" Expression "do" Expression Expression;
 ELambda.                Expression13 ::= "\\" [Param] "->" Expression ;
 EMatch.                 Expression13 ::= "match" Expression "with" StartingUnionSep [Alternate] ;
 

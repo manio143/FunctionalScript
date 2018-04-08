@@ -89,14 +89,6 @@ let getName p = p.Name
 @getFirstPupil :: Teacher -> Person
 let getFirstPupil t = head <| t.Pupils
 
-let typeTest () =
-    let n1 = getName(Bob)
-    let n2 = getName(BobInWork)
-    //let fp1 = getFirstPupil(Bob) -- error: getFirstPupil requires additional property 'Pupils' to be present in record `t`
-    let fp2 = getFirstPupil(BobInWork)
-    //error: let cannot be the last expression
-    () //added () so that next function is parsed
-
 @main :: [String] -> Integers
 let main args = 
     let i = System.Console.Read(()) :: Integer
