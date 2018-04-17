@@ -3,12 +3,13 @@ module ProgramState where
 
 import System.IO
 import System.Exit
+import Debug.Trace
 
 data Tree a = Leaf | Node (Tree a) a (Tree a)
     deriving(Eq, Show)
 
 type Ident = String
-type Store = Tree (Ident, Value)
+type Store = Tree (Ident, Either Function Value)
 
 data Number = Int Integer | Float Double
     deriving(Eq, Show)
@@ -126,19 +127,22 @@ intOfNumber (Float f) = round f
 
 
 eval :: Expression -> Store -> IO Value
-eval (ValueExpression val) _ = return val
+eval (ValueExpression val) _ = trace ("eval val "++show val) return val
 eval (NegativeExpression e) s = eval e s >>= neg
     where
         neg (NumberValue (Int i)) = return (NumberValue (Int (-i)))
         neg (NumberValue (Float f)) = return (NumberValue (Float (-f)))
 eval (LetExpression id el eo) s = do
-    val <- eval el s
+    val <- eval el (withRec id el s s)
     eval eo (withVar id val s)
 eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
     case getVar id s of
-        Nothing -> error ("Variable `"++id++"` is not bound")
-        Just val -> return val
+        Just val -> trace ("eval "++id++" - "++ show val) $ return val
+        Nothing -> 
+            case getRec id s of
+                Just (e, s') -> eval e (withRec id e s' s')
+                Nothing -> error ("Variable `"++id++"` is not bound")
 eval (ListConstruction eli) s = unpack [] $ map (\e -> eval e s) eli
         where
             unpack acc (h:t) = do
@@ -178,14 +182,10 @@ eval (RecordUpdateExpression id e) s =
         insert (i, x) [] = [(i,x)]
 eval (IfExpression econd etrue efalse) s = do
     cond <- eval econd s
-    case cond of
-        UnionValue ("True", UnionEnum) -> eval etrue s
-        UnionValue ("False", UnionEnum) -> eval efalse s
+    if cond == true then eval etrue s else eval efalse s
 eval (IfDoExpression econd edo econt) s = do
     cond <- eval econd s
-    case cond of
-        UnionValue ("True", UnionEnum) -> eval edo s >> eval econt s
-        UnionValue ("False", UnionEnum) -> eval econt s
+    if cond == true then eval edo s >> eval econt s else eval econt s
 eval (LambdaExpression p e) s = return $ FunctionValue $ Func s p e
 eval (MatchExpression e ali) s = do
     val <- eval e s
@@ -206,16 +206,30 @@ eval (ApplicationExpression ef ev) s = do
         FunctionValue (BuiltIn f) -> f val
 
 withVar :: Ident -> Value -> Store -> Store
-withVar id v (Leaf) = Node Leaf (id, v) Leaf
+withVar id v Leaf = Node Leaf (id, Right v) Leaf
 withVar id v (Node lt (cid, cv) rt) | id < cid = Node (withVar id v lt) (cid, cv) rt
-                                    | id == cid = Node lt (id, v) rt
+                                    | id == cid = Node lt (id, Right v) rt
                                     | id > cid = Node lt (cid, cv) (withVar id v rt)
 
 getVar :: Ident -> Store -> Maybe Value
 getVar id Leaf = Nothing
-getVar id (Node lt (cid, cv) rt) | id == cid = Just cv
-                                 | id < cid = getVar id lt
-                                 | id > cid = getVar id rt
+getVar id (Node lt (cid, gcv) rt) | id == cid = case gcv of
+                                                    Right v -> Just v
+                                                    Left{} -> Nothing
+                                  | id < cid = getVar id lt
+                                  | id > cid = getVar id rt
+
+withRec :: Ident -> Expression -> Store -> Store -> Store
+withRec id e env Leaf = Node Leaf (id, Left $ Func env (BoundParameter id) e) Leaf
+withRec id e env (Node lt (cid, cv) rt) | id < cid = Node (withRec id e env lt) (cid, cv) rt
+                                    | id == cid = Node lt (id, Left $ Func env (BoundParameter id) e) rt
+                                    | id > cid = Node lt (cid, cv) (withRec id e env rt)
+
+getRec :: Ident -> Store -> Maybe (Expression, Store)
+getRec id Leaf = Nothing
+getRec id (Node lt (cid, Left (Func s p e)) rt) | id == cid = Just (e, s)
+getRec id (Node lt (cid, _) rt) | id < cid = getRec id lt
+                                | id > cid = getRec id rt
 
 arithmetic :: (Double -> Double -> Double) -> Value
 arithmetic p = FunctionValue (BuiltIn (\(NumberValue x) -> return $ FunctionValue (BuiltIn (\(NumberValue y) -> return $ NumberValue $ add x y))))
@@ -225,11 +239,46 @@ arithmetic p = FunctionValue (BuiltIn (\(NumberValue x) -> return $ FunctionValu
             add (Float i) (Int j) = Float (p i (fromIntegral j))
             add (Float i) (Float j) = Float (p i j)
 
-arithmeticSet :: [(Ident, Value)]
-arithmeticSet = [
+operatorSet :: [(Ident, Value)]
+operatorSet = [
                 ("(+)", arithmetic (+)),
                 ("(-)", arithmetic (-)),
                 ("(*)", arithmetic (*)),
                 ("(/)", arithmetic (/)),
-                ("(**)", arithmetic (**))
+                ("(**)", arithmetic (**)),
+                ("(==)", equals)
         ]
+
+equals :: Value
+equals = FunctionValue (BuiltIn (\a -> return $ FunctionValue (BuiltIn (\b -> if a == b then return true else return false))))
+    
+
+true = UnionValue $ ("True", UnionEnum)
+false = UnionValue $ ("False", UnionEnum)
+
+basicStore = foldl (\acc (i, f) -> withVar i f acc) Leaf operatorSet
+
+recTest = 
+    LetExpression "f" 
+        (LambdaExpression (BoundParameter "x") 
+            (IfExpression 
+                (ApplicationExpression 
+                    (ApplicationExpression 
+                        (VariableExpression "(==)") 
+                        (ValueExpression (NumberValue (Int 0))))
+                    (VariableExpression "x"))
+                (ValueExpression (NumberValue (Int 0)))
+                (ApplicationExpression
+                    (ApplicationExpression
+                        (VariableExpression "(+)")
+                        (ValueExpression (NumberValue (Int 1))))
+                    (ApplicationExpression
+                        (VariableExpression "f")
+                        (ApplicationExpression
+                            (ApplicationExpression
+                                (VariableExpression "(-)")
+                                (VariableExpression "x"))
+                            (ValueExpression (NumberValue (Int 1))))))))
+        (ApplicationExpression 
+            (VariableExpression "f")
+            (ValueExpression (NumberValue (Int 5))))
