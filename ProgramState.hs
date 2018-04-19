@@ -37,7 +37,7 @@ data Value =
     | NumberValue Number
     | CharacterValue Char
     | ListValue List 
-    | TupleValue Tuple 
+    | TupleValue Tuple
     | UnionValue Union
     | FunctionValue Function
     deriving(Eq, Show)
@@ -231,27 +231,45 @@ getRec id (Node lt (cid, Left (Func s p e)) rt) | id == cid = Just (e, s)
 getRec id (Node lt (cid, _) rt) | id < cid = getRec id lt
                                 | id > cid = getRec id rt
 
-arithmetic :: (Double -> Double -> Double) -> Value
-arithmetic p = FunctionValue (BuiltIn (\(NumberValue x) -> return $ FunctionValue (BuiltIn (\(NumberValue y) -> return $ NumberValue $ add x y))))
-        where
-            add (Int i) (Int j) = Int (round $ p (fromInteger i) (fromInteger j))
-            add (Int i) (Float j) = Float (p (fromIntegral i) j)
-            add (Float i) (Int j) = Float (p i (fromIntegral j))
-            add (Float i) (Float j) = Float (p i j)
+builtInOp :: (Value -> Value -> Value) -> Value
+builtInOp f = FunctionValue $
+                BuiltIn (\a -> return $ FunctionValue $
+                    BuiltIn (\b -> return $ f a b))
+
+plus = builtInOp $ numCast (+) (+)
+minus = builtInOp $ numCast (-) (-)
+times = builtInOp $ numCast (*) (*)
+power = builtInOp $ floatCast (**)
+divide = builtInOp $ floatCast (/)
+
+numCast :: (Double->Double->Double) -> (Integer->Integer->Integer) -> Value -> Value -> Value
+numCast df iff v1 v2 = let v = case (v1, v2) of
+                                (NumberValue (Int i), NumberValue (Int j)) -> Int $ iff i j
+                                (NumberValue (Int i), NumberValue (Float d)) -> Float $ df (fromInteger i) d
+                                (NumberValue (Float d), NumberValue (Int i)) -> Float $ df d (fromInteger i)
+                                (NumberValue (Float e), NumberValue (Float d)) -> Float $ df e d
+                        in NumberValue v
+floatCast :: (Double->Double->Double) -> Value -> Value -> Value
+floatCast df v1 v2 = let v = case (v1, v2) of
+                                (NumberValue (Int i), NumberValue (Int j)) -> Float $ df (fromInteger i) (fromInteger j)
+                                (NumberValue (Int i), NumberValue (Float d)) -> Float $ df (fromInteger i) d
+                                (NumberValue (Float d), NumberValue (Int i)) -> Float $ df d (fromInteger i)
+                                (NumberValue (Float e), NumberValue (Float d)) -> Float $ df e d
+                        in NumberValue v
 
 operatorSet :: [(Ident, Value)]
 operatorSet = [
-                ("(+)", arithmetic (+)),
-                ("(-)", arithmetic (-)),
-                ("(*)", arithmetic (*)),
-                ("(/)", arithmetic (/)),
-                ("(**)", arithmetic (**)),
+                ("(+)", plus),
+                ("(-)", minus),
+                ("(*)", times),
+                ("(/)", divide),
+                ("(**)", power),
                 ("(==)", equals)
         ]
 
 equals :: Value
-equals = FunctionValue (BuiltIn (\a -> return $ FunctionValue (BuiltIn (\b -> if a == b then return true else return false))))
-    
+equals = builtInOp $ \a b -> if a == b then true else false
+
 
 true = UnionValue $ ("True", UnionEnum)
 false = UnionValue $ ("False", UnionEnum)
