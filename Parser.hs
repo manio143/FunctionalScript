@@ -182,9 +182,10 @@ pTupleType t1 = do
 
 pFunctionType :: Stream s m Char => Type -> ParsecT s u m Type
 pFunctionType t1 = do
+    pos <- getPosition
     reservedOp "->"
     t2 <- pType
-    return (TFunction t1 t2)
+    return (TFunction pos t1 t2)
 
 pConciseType :: Stream s m Char => ParsecT s u m Type
 pConciseType = 
@@ -195,7 +196,7 @@ pConciseType =
         <|> pRecordType
 
 pUnitType :: Stream s m Char => ParsecT s u m Type
-pUnitType = reservedOp "()" >> return TUnit
+pUnitType = reservedOp "()" >> getPosition >>= return . TUnit
 
 pNamedType :: Stream s m Char => ParsecT s u m Type
 pNamedType = do
@@ -211,7 +212,10 @@ pExactTypeParam = do
         Just ts -> return (ExTypeParam ts)
 
 pListType :: Stream s m Char => ParsecT s u m Type
-pListType = brackets pType >>= return . TList
+pListType = do
+    pos <- getPosition
+    t <- brackets pType
+    return (TList pos t)
 
 pRecordType :: Stream s m Char => ParsecT s u m Type
 pRecordType = 
@@ -231,16 +235,17 @@ pOpExpr (ops:t) = do
     option e1 (try $ pInfix e1 continuation)
     where
         pInfix e1 continuation = do
+            pos <- getPosition
             op <- whiteSpace *> pOp ops
             e2 <- continuation
-            let opExpr = EOp e1 (Op op) e2
+            let opExpr = EOp pos e1 (Op op) e2
             case assoc op of
                 LeftAssoc -> option opExpr (try $ pInfix opExpr continuation)
                 RightAssoc -> do
                     me3 <- maybe (pInfix e2 continuation)
                     case me3 of
                         Nothing -> return opExpr
-                        Just e3 -> return (EOp e1 (Op op) e3)
+                        Just e3 -> return (EOp pos e1 (Op op) e3)
 pOp :: Stream s m Char => [String] -> ParsecT s u m String
 pOp [] = operator
 pOp l = foldl (<|>) (unexpected "Op") $ map (try . symbol)  l
@@ -252,15 +257,24 @@ pDotExpr = do
     where
         inner :: Stream s m Char => Expression -> ParsecT s u m Expression
         inner exp = do
-            mi <- maybe (string "." *> pIdentifier)
+            mi <- maybe (do
+                pos <- getPosition
+                string "."
+                id <- pIdentifier
+                return (id, pos))
             case mi of
                 Nothing -> return exp
-                Just id -> inner (ERecordField exp id)
+                Just (id, pos) -> inner (ERecordField pos exp id)
 
 pTypedExpr :: Stream s m Char => ParsecT s u m Expression
 pTypedExpr = do
     e <- pApplicationExpr
-    option e (try (reservedOp "::" *> pType >>= return . (ETyped e)))
+    option e (try (do
+        pos <- getPosition
+        reservedOp "::"
+        t <- pType
+        return (ETyped pos e t)
+        ))
 
 pApplicationExpr :: Stream s m Char => ParsecT s u m Expression
 pApplicationExpr = do
@@ -270,7 +284,8 @@ pApplicationExpr = do
     where
         inner :: Stream s m Char => Expression -> ParsecT s u m Expression
         inner exp = do
-            me2 <- maybe ((parens $ sepBy1 pExpression comma) >>= return . (EApplication exp))
+            pos <- getPosition
+            me2 <- maybe ((parens $ sepBy1 pExpression comma) >>= return . (EApplication pos exp))
             case me2 of
                 Nothing -> return exp
                 Just e2 -> inner e2
@@ -285,7 +300,11 @@ pConciseExpr =
     <|> pMatchExpr
     
 pNegativeExpr :: Stream s m Char => ParsecT s u m Expression
-pNegativeExpr = symbol "-" >> pExpression >>= return . ENegative
+pNegativeExpr = do
+    pos <- getPosition
+    symbol "-"
+    e <- pExpression
+    return (ENegative pos e)
 
 pParensExpr :: Stream s m Char => ParsecT s u m Expression
 pParensExpr = parens pExpression >>= return . EParenthesis
@@ -295,16 +314,20 @@ pVarExpr = pIdentifier >>= return . EVariable
 
 pLetExpr :: Stream s m Char => ParsecT s u m Expression
 pLetExpr = do
+    pos <- getPosition
     reserved "let"
     bp <- pBindPattern
     reservedOp "="
     eass <- pExpression
     maybe (reserved "in")
     eres <- pExpression
-    return (ELet bp eass eres)
+    return (ELet pos bp eass eres)
 
 pLiteralExpr :: Stream s m Char => ParsecT s u m Expression
-pLiteralExpr = pLiteral >>= return . ELiteral
+pLiteralExpr = do
+    pos <- getPosition
+    l <- pLiteral
+    return (ELiteral pos l)
 
 pLiteral :: Stream s m Char => ParsecT s u m Literal
 pLiteral =
@@ -316,15 +339,17 @@ pLiteral =
 
 pDoExpr :: Stream s m Char => ParsecT s u m Expression
 pDoExpr = do
+    pos <- getPosition
     reserved "do" 
     edo <- pExpression 
     maybe (reserved "in")
     econt <- pExpression
-    return (EDo edo econt)
+    return (EDo pos edo econt)
 
 pTupleExpr :: Stream s m Char => ParsecT s u m Expression
-pTupleExpr = 
-    parens (sepBy2 pExpression comma) >>= return . ETuple
+pTupleExpr = do
+    pos <- getPosition
+    parens (sepBy2 pExpression comma) >>= return . (ETuple pos)
 
 pListSeqExpr :: Stream s m Char => ParsecT s u m Expression
 pListSeqExpr = 
@@ -333,9 +358,10 @@ pListSeqExpr =
         inner :: Stream s m Char => ParsecT s u m Expression
         inner = do
             e1 <- pExpression
+            pos <- getPosition
             reservedOp ".."
             e2 <- pExpression
-            return (EListSequence e1 e2)
+            return (EListSequence pos e1 e2)
 
 pListComprehensionExpr :: Stream s m Char => ParsecT s u m Expression
 pListComprehensionExpr =
@@ -344,85 +370,97 @@ pListComprehensionExpr =
         inner :: Stream s m Char => ParsecT s u m Expression
         inner = do
             eres <- pExpression
+            pos <- getPosition
             reservedOp "|"
             comps <- sepBy1 pComprehension comma
-            return (EListComprehension eres comps)
+            return (EListComprehension pos eres comps)
 
 pListExpr :: Stream s m Char => ParsecT s u m Expression
-pListExpr = brackets (sepBy pExpression comma) >>= return . EList
+pListExpr = do
+    pos <- getPosition
+    brackets (sepBy pExpression comma) >>= return . (EList pos)
 
 pRecordExpr :: Stream s m Char => ParsecT s u m Expression
-pRecordExpr =
+pRecordExpr = do
+    pos <- getPosition
     braces (sepBy1 pRecordAssignment semi)
-     >>= return . ERecord
+     >>= return . (ERecord pos)
 
 pRecordAssignment :: Stream s m Char => ParsecT s u m RecordFieldAssignment
 pRecordAssignment = do
     id <- pIdentifier
+    pos <- getPosition
     reservedOp "="
     e <- pExpression
-    return (RecordFieldAssignment id e)
+    return (RecordFieldAssignment pos id e)
 
 pRecordUpdateExpr :: Stream s m Char => ParsecT s u m Expression
-pRecordUpdateExpr =
-    braces inner
+pRecordUpdateExpr = do
+    pos <- getPosition
+    braces (inner pos)
     where
-        inner :: Stream s m Char => ParsecT s u m Expression
-        inner = do
+        inner :: Stream s m Char => SourcePos -> ParsecT s u m Expression
+        inner pos = do
             id <- pIdentifier
             reserved "with"
             fields <- sepBy1 pRecordAssignment semi
-            return (ERecordUpdate id fields)
+            return (ERecordUpdate pos id fields)
 
 pIfExpr :: Stream s m Char => ParsecT s u m Expression
 pIfExpr = do
+    pos <- getPosition
     reserved "if"
     econd <- pExpression
     reserved "then"
     etrue <- pExpression
     reserved "else"
     efalse <- pExpression
-    return (EIf econd etrue efalse)
+    return (EIf pos econd etrue efalse)
 
 pIfDoExpr :: Stream s m Char => ParsecT s u m Expression
 pIfDoExpr = do
+    pos <- getPosition
     reserved "if"
     econd <- pExpression
     reserved "do"
     edo <- pExpression
     econt <- pExpression
-    return (EIfDo econd edo econt)
+    return (EIfDo pos econd edo econt)
 
 pLambdaExpr :: Stream s m Char => ParsecT s u m Expression
 pLambdaExpr = do
+    pos <- getPosition
     reservedOp "\\"
     params <- many1 pParam
     reservedOp "->"
     e <- pExpression
-    return (ELambda params e)
+    return (ELambda pos params e)
 
 pMatchExpr :: Stream s m Char => ParsecT s u m Expression
 pMatchExpr = do
+    pos <- getPosition
     reserved "match"
     em <- pExpression
     reserved "with"
     maybe (reservedOp "|")
     alts <- sepBy1 pAlternate (reservedOp "|")
-    return (EMatch em alts)
+    return (EMatch pos em alts)
 
 pAlternate :: Stream s m Char => ParsecT s u m Alternate
 pAlternate = do
     pat <- pPattern
+    pos <- getPosition
     reservedOp "->"
     e <- pExpression
-    return (Alternate pat e)
+    return (Alternate pos pat e)
 
 pComprehension :: Stream s m Char => ParsecT s u m Comprehension
 pComprehension = do
     bp <- pBindPattern
+    pos <- getPosition
     reservedOp "<-"
     e <- pExpression
-    return (Comprehension bp e)
+    return (Comprehension pos bp e)
 
 --- PATTERN ---
 
@@ -439,17 +477,24 @@ pVarPat = pIdentifier >>= return . PVariable
 pApplicationPat :: Stream s m Char => ParsecT s u m Pattern
 pApplicationPat = do
     id <- pIdentifier
+    pos <- getPosition
     pat <- parens pPattern
-    return (PApplication id pat)
+    return (PApplication pos id pat)
 
 pLiteralPat :: Stream s m Char => ParsecT s u m Pattern
-pLiteralPat = pLiteral >>= return . PLiteral
+pLiteralPat = do
+    pos <- getPosition
+    pLiteral >>= return . (PLiteral pos)
 
 pTuplePat :: Stream s m Char => ParsecT s u m Pattern
-pTuplePat = parens (sepBy2 pPattern comma) >>= return . PTuple
+pTuplePat = do
+    pos <- getPosition
+    parens (sepBy2 pPattern comma) >>= return . (PTuple pos)
 
 pListPat :: Stream s m Char => ParsecT s u m Pattern
-pListPat = brackets (sepBy pPattern comma) >>= return . PList
+pListPat = do
+    pos <- getPosition
+    brackets (sepBy pPattern comma) >>= return . (PList pos)
 
 pListHeadPat :: Stream s m Char => ParsecT s u m Pattern
 pListHeadPat = parens inner
@@ -457,36 +502,39 @@ pListHeadPat = parens inner
         inner :: Stream s m Char => ParsecT s u m Pattern
         inner = do
             phead <- pPattern
-            whiteSpace *> symbol ":"
+            pos <- whiteSpace *> getPosition <* symbol ":"
             ptail <- pPattern
-            return (PListHead phead ptail)
+            return (PListHead pos phead ptail)
 
 pParensPat :: Stream s m Char => ParsecT s u m Pattern
 pParensPat = parens pPattern >>= return . PParenthesis
 
 pWildCardPat :: Stream s m Char => ParsecT s u m Pattern
-pWildCardPat = symbol "_" >> return PWildCard
+pWildCardPat = getPosition <* symbol "_" >>= return . PWildCard
 
 pListContainsPat :: Stream s m Char => ParsecT s u m Pattern
 pListContainsPat = brackets inner
     where
         inner :: Stream s m Char => ParsecT s u m Pattern
         inner = do
+            pos <- getPosition
             reservedOp "..."
             e <- pExpression
             reservedOp "..."
-            return (PListContains e)
+            return (PListContains pos e)
 
 pRecordPat :: Stream s m Char => ParsecT s u m Pattern
-pRecordPat = 
-    braces (sepBy1 pRecordAssignmentPat semi) >>= return . PRecord
+pRecordPat = do
+    pos <- getPosition
+    braces (sepBy1 pRecordAssignmentPat semi) >>= return . (PRecord pos)
 
 pRecordAssignmentPat :: Stream s m Char => ParsecT s u m RecordPattern
 pRecordAssignmentPat = do
     id <- pIdentifier
+    pos <- getPosition
     reservedOp "="
     p <- pPattern
-    return (RecordPattern id p)
+    return (RecordPattern pos id p)
 
 --- BIND PATTERN ---
 
@@ -496,7 +544,7 @@ pBindPattern =
         <|> pBindOp
         <|> pBindRecord
         <|> pBindList
-        <|> (reservedOp "_" >> return BWildCard)
+        <|> (getPosition <* reservedOp "_" >>= return . BWildCard)
         <|> (do
             id <- pIdentifier
             r <- maybe $ pBindFunctionDecl id
@@ -512,50 +560,61 @@ pBindFunctionDecl id = do
 
 pParam :: Stream s m Char => ParsecT s u m Param
 pParam =
-    (reservedOp "()" >> return Unit)
-        <|> (reservedOp "_"  >> return WildCard)
+    (getPosition <* reservedOp "()" >>= return . Unit)
+        <|> (getPosition <* reservedOp "_"  >>= return . WildCard)
         <|> (pIdentifier >>= return . Parameter)
 
 pBindParenthesis :: Stream s m Char => ParsecT s u m BindPattern
-pBindParenthesis =
+pBindParenthesis = do
+    pos <- getPosition
     parens $ try pBindListHead
-            <|> try pBindTuple
+            <|> try (pBindTuple pos)
             <|> (pBindPattern >>= return . BParenthesis)
     where
         pBindListHead :: Stream s m Char => ParsecT s u m BindPattern
         pBindListHead = do
             b1 <- pBindPattern
+            pos <- getPosition
             symbol ":"
             b2 <- pBindPattern
-            return (BListHead b1 b2)
+            return (BListHead pos b1 b2)
 
-        pBindTuple :: Stream s m Char => ParsecT s u m BindPattern
-        pBindTuple = sepBy2 pBindPattern comma >>= return . BTuple
+        pBindTuple :: Stream s m Char => SourcePos -> ParsecT s u m BindPattern
+        pBindTuple pos = sepBy2 pBindPattern comma >>= return . BTuple pos
 
 pBindOp :: Stream s m Char => ParsecT s u m BindPattern
 pBindOp = do
-    op <- parens operator >>= return . Op
+    (op, pos) <- parens (do
+        pos <- getPosition
+        op <- operator
+        return (Op op, pos))
     r <- many pParam
-    return (BOp op r)
+    return (BOp pos op r)
 
 pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
-pBindRecord =
-    (braces $ sepBy1 pBindRecordElem comma) >>= return . BRecord
+pBindRecord = do
+    pos <- getPosition
+    (braces $ sepBy1 pBindRecordElem comma) >>= return . BRecord pos
     where
         pBindRecordElem :: Stream s m Char => ParsecT s u m RecordBindPattern
         pBindRecordElem = do
             id <- pIdentifier
+            pos <- getPosition
             symbol "->"
             varId <- pBindPattern
-            return (RecordBindPattern id varId)
+            return (RecordBindPattern pos id varId)
 
 pBindList :: Stream s m Char => ParsecT s u m BindPattern
-pBindList =
-    (brackets $ sepBy pBindPattern comma) >>= return . BList
+pBindList = do
+    pos <- getPosition
+    (brackets $ sepBy pBindPattern comma) >>= return . BList pos
 
 
 pIdentifier :: Stream s m Char => ParsecT s u m Identifier
-pIdentifier = identifier >>= return . Identifier
+pIdentifier = do
+    pos <- getPosition
+    id <- identifier
+    return $ Identifier id pos
 
 sepBy2 :: Stream s m Char => ParsecT s u m a -> ParsecT s u m b -> ParsecT s u m [a]
 sepBy2 p sep = do

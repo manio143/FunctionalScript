@@ -10,7 +10,7 @@ let s = "abc"
 
 // deklaracje prostych funkcji
 let mat x y = x * 10 + y
-let mat2 x = let y == x * 10 in y + 1
+let mat2 x = let y = x * 10 in y + 1
 
 let multiline x =
     let a = 10
