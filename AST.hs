@@ -1,10 +1,13 @@
 module AST where
 
+  import Data.List
   import Text.Parsec
 
-  data Identifier = Identifier String SourcePos
+  type Ident = String
+
+  data Identifier = Identifier Ident SourcePos
     deriving (Eq, Ord, Show)
-  data Op = Op String
+  data Op = Op Ident
     deriving (Eq, Ord, Show)
   
   data Param = Parameter Identifier | Unit SourcePos | WildCard SourcePos
@@ -20,6 +23,9 @@ module AST where
       | ValueDeclaration BindPattern Expression
     deriving (Eq, Ord, Show)
   
+  data ValueDeclaration = Val Identifier Expression
+    deriving(Eq, Ord, Show)
+
   data TypeParam = TypeParam [TypeIdentifier] | EmptyTypeParam
     deriving (Eq, Ord, Show)
   
@@ -33,7 +39,10 @@ module AST where
     deriving (Eq, Ord, Show)
   
   data RecordFieldType = RecordFieldType Identifier Type
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Ord)
+
+  instance Show RecordFieldType where
+    show (RecordFieldType (Identifier id _) t) = id ++ " :: " ++ show t
   
   data UnionDefinition = UDEnum Identifier | UDTyped Identifier Type
     deriving (Eq, Ord, Show)
@@ -43,14 +52,31 @@ module AST where
       | TTuple [Type]
       | TList SourcePos Type
       | TUnit SourcePos
-      | TByName Identifier ExactTypeParam
+      | TNamed Identifier
+      | TAlias Identifier Type
       | TRecord [RecordFieldType]
       | TParenthesis Type
-    deriving (Eq, Ord, Show)
-  
-  data ExactTypeParam = ExTypeParam [Type] | ExEmptyTypeParam
-    deriving (Eq, Ord, Show)
-  
+      | TVar Identifier
+      | TConstr [Identifier] Type
+      | TApp SourcePos Type [Type]
+    deriving (Eq, Ord)
+
+  instance Show Type where
+    show (TFunction _ t1 t2) = 
+      (case t1 of
+        TFunction{} -> show (TParenthesis t1)
+        _ -> show t1) ++ " -> " ++ show t2
+    show (TTuple ts) = "(" ++ intercalate ", " (map show ts) ++ ")"
+    show (TList _ t) = "[" ++ show t ++ "]"
+    show (TUnit _) = "()"
+    show (TNamed (Identifier id _)) = id
+    show (TAlias (Identifier id _) _) = id
+    show (TRecord rfts) = "{" ++ intercalate "; " (map show rfts) ++ "}"
+    show (TParenthesis t) = "("++ show t ++ ")"
+    show (TVar (Identifier id _)) = id
+    show (TConstr ids t) = "|<"++intercalate "," (map (\(Identifier id _) -> id) ids) ++ "> => " ++ show t ++"|"
+    show (TApp _ t ts) = show t ++ "<" ++ intercalate ", " (map show ts) ++ ">"
+    
   data Literal
       = Char Char
       | String String
