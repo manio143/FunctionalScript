@@ -23,7 +23,7 @@ module AST where
       | ValueDeclaration BindPattern Expression
     deriving (Eq, Ord, Show)
   
-  data ValueDeclaration = Val Identifier Expression
+  data ValueDeclaration = Val SourcePos BindPattern Expression
     deriving(Eq, Ord, Show)
 
   data TypeParam = TypeParam [TypeIdentifier] | EmptyTypeParam

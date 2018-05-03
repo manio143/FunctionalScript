@@ -200,16 +200,15 @@ pUnitType = reservedOp "()" >> getPosition >>= return . TUnit
 
 pNamedType :: Stream s m Char => ParsecT s u m Type
 pNamedType = do
+    pos <- getPosition
     id <- pIdentifier
     params <- pExactTypeParam
-    return (TByName id params)
+    case params of
+        Nothing -> return (TNamed id)
+        Just ts -> return (TApp pos (TNamed id) ts)
 
-pExactTypeParam :: Stream s m Char => ParsecT s u m ExactTypeParam
-pExactTypeParam = do
-    m <- maybe $ angles $ sepBy1 pType comma
-    case m of
-        Nothing -> return ExEmptyTypeParam
-        Just ts -> return (ExTypeParam ts)
+pExactTypeParam :: Stream s m Char => ParsecT s u m (Maybe [Type])
+pExactTypeParam = maybe $ angles $ sepBy1 pType comma
 
 pListType :: Stream s m Char => ParsecT s u m Type
 pListType = do
@@ -594,7 +593,7 @@ pBindOp = do
 pBindRecord :: Stream s m Char => ParsecT s u m BindPattern
 pBindRecord = do
     pos <- getPosition
-    (braces $ sepBy1 pBindRecordElem comma) >>= return . BRecord pos
+    (braces $ sepBy1 pBindRecordElem semi) >>= return . BRecord pos
     where
         pBindRecordElem :: Stream s m Char => ParsecT s u m RecordBindPattern
         pBindRecordElem = do
