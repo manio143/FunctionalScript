@@ -76,7 +76,7 @@ whiteSpace = Tok.whiteSpace lexer
 parseFile filename contents = parse pProgram filename contents
 
 pProgram :: Stream s m Char => ParsecT s u m Program
-pProgram = whiteSpace *> many pDeclaration >>= return . Program
+pProgram = whiteSpace *> many pDeclaration <* eof >>= return . Program
 
 --- DECLARATIONS ---
 

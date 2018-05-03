@@ -23,7 +23,7 @@ opId (Op op) = Identifier ("("++op++")")
 tUnit = TNamed $ ident "()"
 tChar = TNamed $ ident "Char"
 tNum = TNamed $ ident "Number"
-tBool = TNamed $ ident "Bool"
+tBool = TUnion (ident "Bool") [UDEnum (ident "True"), UDEnum (ident "False")]
 tList = TConstr [ident "a"] (TList baseLibPos (TVar $ ident "a"))
 tFun = TConstr [(ident "a"),(ident "b")] (TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "b"))
 
@@ -56,7 +56,7 @@ simplify (TApp pos (TConstr ids tc) ts) | length ids == length ts = do
                                             tss <- mapM simplify ts
                                             return $ zip (uids ids) tss `apply` t
                                         | otherwise = posFail pos "Incorrect number of type parameters"
-simplify (TApp pos _ _) = posFail pos "Not a type constructor"
+simplify t@(TApp pos _ _) = posFail pos $ "Not a type constructor: "++show t
 simplify (TConstr ids tc) = return . TConstr ids =<< simplify tc
 simplify (TParenthesis t) = simplify t
 simplify (TRecord rfts) = return . TRecord =<< mapM (\(RecordFieldType id t) -> return . RecordFieldType id =<< simplify t) rfts
@@ -67,6 +67,11 @@ simplify (TFunction pos t1 t2) = do
 simplify (TTuple ts) = return . TTuple =<< mapM simplify ts
 simplify (TList pos t) = return . TList pos =<< simplify t
 simplify (TAlias id t) = return . TAlias id =<< simplify t
+simplify (TUnion id uds) = return . TUnion id =<< mapM (\ud -> case ud of
+                                                                UDEnum{} -> return ud
+                                                                UDTyped id t -> do
+                                                                    t' <- simplify t
+                                                                    return $ UDTyped id t') uds
 simplify t = return t
 
 class Types t where
@@ -123,14 +128,17 @@ mgu pos t (TAlias _ t') = mgu pos t t'
 
 mgu pos (TFunction _ t1 t2) (TFunction _ t1' t2') =
     mergeApply pos nullSubst $ zip [t1,t2] [t1', t2']
-    -- do
-    --     s1 <- mgu t1 t1'
-    --     s2 <- mgu (apply s1 t2) (apply s1 t2')
-    --     return (s2 @@ s1)
 mgu pos (TTuple ts) (TTuple ts') =
     mergeApply pos nullSubst (zip ts ts')
 
 mgu pos (TList _ t) (TList _ t') = mgu pos t t'
+
+mgu pos (TUnion id uds) (TUnion id' uds') | id == id' = mergeApply pos nullSubst $ zip (types uds) (types uds')
+    where
+        types uds = tps uds []
+        tps [] acc = reverse acc
+        tps (UDEnum _ : t) acc = tps t acc
+        tps (UDTyped _ t : ts) acc = tps ts (t:acc)
 
 mgu pos (TRecord rfts) (TRecord rftsExpected) = do
     let pairsM = map (\(id, t) -> (id, t, lookup id $ map recFType rfts)) $ map recFType rftsExpected
@@ -531,3 +539,16 @@ testId = "id" :>: TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "a")
 ignore = "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit
 
 boolVal = ["True" :>: tBool, "False" :>: tBool]
+
+baseLibTypes = [
+    "(+)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
+    "(-)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
+    "(*)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
+    "(/)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
+    "(**)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
+    "(&&)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tBool tBool),
+    "(||)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tBool tBool),
+    "id" :>: TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "a"),
+    "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit,
+    "True" :>: tBool, "False" :>: tBool
+ ]

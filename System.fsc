@@ -2,14 +2,58 @@
  * This is the type definition file
  * for a System object that holds 
  * functions with side effects.
+ *
+ * It's also the standard library.
  *)
-
-data List<a> = Empty | Head of (a * List<a>)
-let (:) h t = Head((h,t))
 
 type Maybe<a> = None | Some of a
 
 @toString :: a -> String
+
+@error :: String -> a
+
+@__float_to_int :: Float -> Integer
+@__int_to_float :: Integer -> Float
+
+let Maybe =
+    {
+        map = \f m -> match m with
+                      | None -> None
+                      | Some(a) -> Some(f(a)) ;
+        get = \m -> match m with
+                    | None -> error "Maybe.get(None)"
+                    | Some(a) -> a
+    }
+
+let List =
+    {
+        head = \(h:t) -> h ;
+        tail = \(h:t) -> t ;
+        map = \f l = let pmap ll acc = match ll with
+                                       | [] -> List.rev(acc)
+                                       | (h:t) -> pmap(t, f(h):acc)
+                     pmap(l, []) ;
+        rev = \l = let prev ll acc = match ll with
+                                     | [] -> acc
+                                     | (h:t) -> prev(t, h:acc)
+                    prev(l, []) ;
+        fold = \f v0 l -> match l with
+                          | [] -> v0
+                          | (h:t) -> fold(f, f(v0, h), t) ;
+        first = \l -> match l with
+                      | [] -> None
+                      | (h:t) -> Some(h) ;
+        getRange = \from to l -> take(to - from, skip(from, l)) ;
+        skip = \n l -> if n <= 0 then l else match l with
+                                             | [] -> []
+                                             | (h:t) -> skip(n-1, t);
+        take = \n l -> let ptake n ll acc = if n <= 0 then List.rev(acc) else match ll with
+                                                                    | [] -> List.rev(acc)
+                                                                    | (h:t) -> ptake(n-1, t, h:acc) ;
+        elem = \x l -> match l with
+                      | [... x ...] -> True
+                      | _ -> False
+    }
 
 type Stream =
     {

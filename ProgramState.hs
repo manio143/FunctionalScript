@@ -8,8 +8,21 @@ import Debug.Trace
 data Tree a = Leaf | Node (Tree a) a (Tree a)
     deriving(Eq, Show)
 
+insertTree :: Ord a => a -> b -> Tree (a,b) -> Tree (a,b)
+insertTree key value Leaf = Node Leaf (key, value) Leaf
+insertTree key value (Node tl (nk, nv) tr) | key == nk = Node tl (key, value) tr
+                                           | key > nk = Node tl (nk, nv) (insertTree key value tr)
+                                           | key < nk = Node (insertTree key value tr) (nk, nv) tr
+
+findTree :: Ord a => a -> Tree (a,b) -> Maybe b
+findTree key Leaf = Nothing
+findTree key (Node tl (nk, nv) tr) | key == nk = Just nv
+                                   | key > nk = findTree key tr
+                                   | key < nk = findTree key tl
+
 type Ident = String
 type Store = Tree (Ident, Either Function Value)
+-- Right Function should be used outside of LetExpression with recursive definition
 
 data Number = Int Integer | Float Double
     deriving(Eq, Show)
@@ -19,7 +32,10 @@ type Tuple = [Value]
 type Union = (Ident, UnionValue)
 data UnionValue = UnionEnum | UnionWithValue Value
     deriving(Eq, Show)
-data Function = Func Store Parameter Expression | BuiltIn (Value -> IO Value)
+data Function = 
+    Func Store Parameter Expression 
+    | Constr Ident
+    | BuiltIn (Value -> IO Value)
 
 instance Eq Function where
     Func s p e == Func s' p' e' = s == s' && p == p' && e == e'
@@ -42,21 +58,21 @@ data Value =
     | FunctionValue Function
     deriving(Eq, Show)
 
-data Type = Type [Ident] TypeKind
-    deriving(Eq, Show)
+-- data Type = Type [Ident] TypeKind
+--     deriving(Eq, Show)
 
-data TypeKind =
-    AliasType Ident --params
-    | RecordType [(Ident, Type)]
-    | FunctionType Type Type
-    | TupleType [Type]
-    | ListType Type
-    | TUnit
-    | UnionType [(Ident, UnionType)]
-    deriving(Eq, Show)
+-- data TypeKind =
+--     AliasType Ident [Type]
+--     | RecordType [(Ident, Type)]
+--     | FunctionType Type Type
+--     | TupleType [Type]
+--     | ListType Type
+--     | UnitType
+--     | UnionType [(Ident, UnionType)]
+--     deriving(Eq, Show)
 
-data UnionType = UnionEnumType | UnionWithValueType Type
-    deriving(Eq, Show)
+-- data UnionType = UnionEnumType | UnionWithValueType Type
+--     deriving(Eq, Show)
 
 data Expression =
     VariableExpression Ident
@@ -74,12 +90,11 @@ data Expression =
     | IfDoExpression Expression Expression Expression
     | LambdaExpression Parameter Expression
     | MatchExpression Expression [Alternate]
-    -- | SideEffectsExpression (IO Value)
     deriving(Eq, Show)
 
 type Operator = Ident
 
-type Alternate = Value -> Maybe Expression
+type Alternate = Value -> Maybe (Store, Expression)
 
 instance Eq Alternate where
     _ == _ = False
@@ -190,7 +205,7 @@ eval (LambdaExpression p e) s = return $ FunctionValue $ Func s p e
 eval (MatchExpression e ali) s = do
     val <- eval e s
     case option ali val of
-        Just ee -> eval ee s
+        Just (s', ee) -> eval ee s'
         Nothing -> error "Unmatched case"
     where
         option (f:ft) val =
@@ -204,32 +219,23 @@ eval (ApplicationExpression ef ev) s = do
         FunctionValue (Func s' (BoundParameter x) exp) -> eval exp (withVar x val s')
         FunctionValue (Func s' _ exp) -> eval exp s'
         FunctionValue (BuiltIn f) -> f val
+        FunctionValue (Constr id) -> return $ UnionValue (id, UnionWithValue val)
 
 withVar :: Ident -> Value -> Store -> Store
-withVar id v Leaf = Node Leaf (id, Right v) Leaf
-withVar id v (Node lt (cid, cv) rt) | id < cid = Node (withVar id v lt) (cid, cv) rt
-                                    | id == cid = Node lt (id, Right v) rt
-                                    | id > cid = Node lt (cid, cv) (withVar id v rt)
+withVar id v = insertTree id (Right v)
 
 getVar :: Ident -> Store -> Maybe Value
-getVar id Leaf = Nothing
-getVar id (Node lt (cid, gcv) rt) | id == cid = case gcv of
-                                                    Right v -> Just v
-                                                    Left{} -> Nothing
-                                  | id < cid = getVar id lt
-                                  | id > cid = getVar id rt
+getVar id s = case findTree id s of
+                Just (Right v) -> Just v
+                _ -> Nothing
 
 withRec :: Ident -> Expression -> Store -> Store -> Store
-withRec id e env Leaf = Node Leaf (id, Left $ Func env (BoundParameter id) e) Leaf
-withRec id e env (Node lt (cid, cv) rt) | id < cid = Node (withRec id e env lt) (cid, cv) rt
-                                    | id == cid = Node lt (id, Left $ Func env (BoundParameter id) e) rt
-                                    | id > cid = Node lt (cid, cv) (withRec id e env rt)
+withRec id e env = insertTree id $ Left $ Func env (BoundParameter id) e
 
 getRec :: Ident -> Store -> Maybe (Expression, Store)
-getRec id Leaf = Nothing
-getRec id (Node lt (cid, Left (Func s p e)) rt) | id == cid = Just (e, s)
-getRec id (Node lt (cid, _) rt) | id < cid = getRec id lt
-                                | id > cid = getRec id rt
+getRec id s = case findTree id s of
+                Just (Left (Func s p e)) -> Just (e, s)
+                _ -> Nothing
 
 builtInOp :: (Value -> Value -> Value) -> Value
 builtInOp f = FunctionValue $
@@ -274,7 +280,7 @@ equals = builtInOp $ \a b -> if a == b then true else false
 true = UnionValue $ ("True", UnionEnum)
 false = UnionValue $ ("False", UnionEnum)
 
-basicStore = foldl (\acc (i, f) -> withVar i f acc) Leaf operatorSet
+baseLibStore = foldl (\acc (i, f) -> withVar i f acc) Leaf operatorSet
 
 recTest = 
     LetExpression "f" 

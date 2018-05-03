@@ -97,9 +97,9 @@ let typeTest () =
     //error: let cannot be the last expression
     () //added () so that next function is parsed
 
-@main :: [String] -> Integers
+@main :: [String] -> Number
 let main args = 
-    let i = System.Console.Read(()) :: Integer
+    let i = System.Console.Read(()) :: Number
     do System.Console.WriteLine <| toString(i + 1)
     if i == 1 do System.Console.WriteLine("You wrote 0")
     System.NoError

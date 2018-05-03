@@ -1,6 +1,8 @@
 module Main where
 
+import AST
 import Parser
+import Translator
 
 import System.IO
 import System.Environment
@@ -34,4 +36,10 @@ interpret file args = do
             h <- openFile file ReadMode
             contents <- hGetContents h
             let ast = parseFile file contents
-            print ast
+            case ast of
+                Right program -> do
+                    -- print program
+                    -- putStrLn ""
+                    store <- translate program
+                    print store
+                Left err -> print err

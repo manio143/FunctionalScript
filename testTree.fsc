@@ -1,0 +1,8 @@
+data Tree<a> = Leaf | Node of (Tree<a> * a * Tree<a>)
+
+let l = Leaf
+let insert x t =
+    match t with
+    | Leaf -> Node((Leaf, x, Leaf))
+    | Node((tl, y, tr)) -> if x <= y then insert(x, tl)
+                           else insert(x, tr)

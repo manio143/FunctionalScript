@@ -56,6 +56,7 @@ module AST where
       | TAlias Identifier Type
       | TRecord [RecordFieldType]
       | TParenthesis Type
+      | TUnion Identifier [UnionDefinition]
       | TVar Identifier
       | TConstr [Identifier] Type
       | TApp SourcePos Type [Type]
@@ -73,6 +74,7 @@ module AST where
     show (TAlias (Identifier id _) _) = id
     show (TRecord rfts) = "{" ++ intercalate "; " (map show rfts) ++ "}"
     show (TParenthesis t) = "("++ show t ++ ")"
+    show (TUnion (Identifier id _) _) = id
     show (TVar (Identifier id _)) = id
     show (TConstr ids t) = "|<"++intercalate "," (map (\(Identifier id _) -> id) ids) ++ "> => " ++ show t ++"|"
     show (TApp _ t ts) = show t ++ "<" ++ intercalate ", " (map show ts) ++ ">"
