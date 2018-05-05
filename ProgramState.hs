@@ -5,6 +5,7 @@ import System.IO
 import System.Exit
 import Debug.Trace
 
+import Data.List
 import Control.Monad.Trans.Maybe
 
 data Tree a = Leaf | Node (Tree a) a (Tree a)
@@ -27,7 +28,12 @@ type Store = Tree (Ident, Either Function Value)
 -- Right Function should be used outside of LetExpression with recursive definition
 
 data Number = Int Integer | Float Double
-    deriving(Eq, Ord, Show)
+    deriving(Eq, Ord)
+
+instance Show Number where
+    show (Int i) = show i
+    show (Float f) = show f
+
 type Record = [(Ident, Value)]
 type List = [Value]
 type Tuple = [Value]
@@ -43,7 +49,7 @@ instance Eq Function where
     Func s p e == Func s' p' e' = s == s' && p == p' && e == e'
     _ == _ = False
 instance Show Function where
-    show (Func s p e) = "(" ++ show p ++") -> " ++ show e
+    show (Func s p e) = show p ++" -> " ++ show e
     show (Constr id) = id++"{}"
     show _ = "BuiltIn function"
 
@@ -52,7 +58,12 @@ instance Ord Function where
     f1 >= f2 = False
 
 data Parameter = BoundParameter Ident | WildCard | Unit
-    deriving(Eq, Show)
+    deriving(Eq)
+
+instance Show Parameter where
+    show (BoundParameter id) = id
+    show WildCard = "_"
+    show Unit = "()"
 
 data Value = 
     UnitValue 
@@ -63,23 +74,21 @@ data Value =
     | TupleValue Tuple
     | UnionValue Union
     | FunctionValue Function
-    deriving(Eq, Ord, Show)
+    deriving(Eq, Ord)
 
--- data Type = Type [Ident] TypeKind
---     deriving(Eq, Show)
-
--- data TypeKind =
---     AliasType Ident [Type]
---     | RecordType [(Ident, Type)]
---     | FunctionType Type Type
---     | TupleType [Type]
---     | ListType Type
---     | UnitType
---     | UnionType [(Ident, UnionType)]
---     deriving(Eq, Show)
-
--- data UnionType = UnionEnumType | UnionWithValueType Type
---     deriving(Eq, Show)
+instance Show Value where
+    show UnitValue = "()"
+    show (RecordValue rc) = "{ "++intercalate "; " (map (\(id,val) -> id++" = "++show val) rc)++" }"
+    show (NumberValue n) = show n
+    show (CharacterValue c) = "'"++[c]++"'"
+    show (ListValue []) = "[]"
+    show (ListValue l) = case head l of
+                            CharacterValue{} -> "\""++map (\(CharacterValue c)->c) l++"\""
+                            _ -> "["++intercalate ", " (map show l)++"]"
+    show (TupleValue l) = "("++intercalate ", " (map show l)++")"
+    show (UnionValue (id, UnionEnum)) = id
+    show (UnionValue (id, UnionWithValue v)) = id++"("++show v++")"
+    show (FunctionValue f) = show f
 
 data Expression =
     VariableExpression Ident
@@ -97,7 +106,25 @@ data Expression =
     | IfDoExpression Expression Expression Expression
     | LambdaExpression Parameter Expression
     | MatchExpression Expression [Alternate]
-    deriving(Eq, Show)
+    deriving(Eq)
+
+instance Show Expression where
+    show (VariableExpression id) = id
+    show (ApplicationExpression e1 e2) = show e1 ++ "("++show e2++")"
+    show (NegativeExpression e) = "- "++show e
+    show (LetExpression id el ec) = "let "++id++" = "++show el++" in "++show ec
+    show (DoExpression el ec) = "do "++show el++" then "++show ec
+    show (ValueExpression val) = show val
+    show (ListConstruction es) = "["++intercalate ", " (map show es)++"]"
+    show (TupleConstruction es) = "("++intercalate ", " (map show es)++")"
+    show (RecordConstruction es) = "{"++intercalate "; " (map (\(id,e) ->id++" = "++show e) es)++"}"
+    show (RecordUpdateExpression id (RecordConstruction es)) = "{ "++id++" with "++ intercalate "; " (map (\(id,e) ->id++" = "++show e) es)++"}"
+    show (RecordFieldExpression e id) = show e ++ "." ++ id
+    show (IfExpression ec et ef) = "if "++show ec++" then "++show et++" else "++show ef
+    show (IfDoExpression ec et ef) = "if "++show ec++" do "++show et++" then "++show ef
+    show (LambdaExpression p e) = show p++" -> "++show e
+    show (MatchExpression e _) = "match "++show e++" with (...)"
+    
 
 type Operator = Ident
 
@@ -149,7 +176,7 @@ intOfNumber (Float f) = round f
 
 
 eval :: Expression -> Store ->  IO Value
-eval (ValueExpression val) _ = trace ("eval Value of "++show val) return val
+eval (ValueExpression val) _ = {-trace ("eval Value of "++show val)-} return val
 eval (NegativeExpression e) s = eval e s >>= neg
     where
         neg (NumberValue (Int i)) = return (NumberValue (Int (-i)))
@@ -161,7 +188,7 @@ eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
     case getVar id s of
         Just val -> 
-            trace ("eval "++id++" - "++ show val) $ return val
+            {-trace ("eval "++id++" - "++ show val) $-} return val
         Nothing -> 
             case getRec id s of
                 Just (e, s') -> eval e (withRec id e s' s')
