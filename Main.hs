@@ -3,6 +3,7 @@ module Main where
 import AST
 import Parser
 import Translator
+import ProgramState
 
 import System.IO
 import System.Environment
@@ -41,5 +42,5 @@ interpret file args = do
                     -- print program
                     -- putStrLn ""
                     store <- translate program
-                    print store
+                    runProgram store args
                 Left err -> print err

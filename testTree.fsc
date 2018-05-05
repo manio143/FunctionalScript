@@ -4,5 +4,29 @@ let l = Leaf
 let insert x t =
     match t with
     | Leaf -> Node((Leaf, x, Leaf))
-    | Node((tl, y, tr)) -> if x <= y then insert(x, tl)
-                           else insert(x, tr)
+    | Node((tl, y, tr)) -> if x <= y then Node((insert(x, tl), y, tr))
+                           else Node((tl, y, insert(x, tr)))
+
+@plusOne :: Tree<Number> -> Tree<Number>
+let plusOne t2 =
+    match t2 with
+    | Leaf -> Leaf
+    | Node((tl2, x2, tr2)) -> Node((plusOne(tl2), x2+1, plusOne(tr2)))
+
+let errTest = plusOne(Node((Leaf, 2, Leaf)))
+
+@main :: [String] -> Number
+let main args =
+    let numbers = [2,4,3,7,5,1,9,8,6]
+    let fold f acc l =
+        match l with
+        | (h:t) -> fold(f, (f(acc, h)), t)
+        | [] -> acc
+    let flip f = \x y -> f(y, x)
+    let infix t =
+        match t with
+        | Leaf -> []
+        | Node((tl, x, tr)) -> infix(tl) ++ [x] ++ infix(tr)
+    let sortedIncreased = infix(plusOne(fold(flip(insert), Leaf, numbers)))
+    do print(sortedIncreased)
+    0

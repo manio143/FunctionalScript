@@ -3,13 +3,21 @@ module TypeInferenceSystem where
 import AST
 
 import Control.Monad
+import Control.Monad.Trans
 import Control.Monad.Trans.State
 import Data.List ((\\), union, nub, intersect)
 import Data.Maybe
+import Data.Char (isUpper)
 
 import Debug.Trace
 
 import Text.Parsec.Pos (SourcePos, initialPos)
+
+-- THIS SHOULD BE IN THE transformers LIBRARY
+instance MonadTrans (StateT s) where
+    lift m = StateT $ \s -> do
+        a <- m
+        return (a, s)
 
 baseLibPos = initialPos "base"
 
@@ -17,22 +25,22 @@ ident :: Ident -> Identifier
 ident i = Identifier i baseLibPos
 
 opId :: Op -> SourcePos -> Identifier
-opId (Op op) = Identifier ("("++op++")")
+opId op = Identifier $ opIdent op
+
+opIdent :: Op -> Ident
+opIdent (Op op) = "("++op++")"
 
 -- BUILTIN TYPES
 tUnit = TNamed $ ident "()"
 tChar = TNamed $ ident "Char"
 tNum = TNamed $ ident "Number"
 tBool = TUnion (ident "Bool") [UDEnum (ident "True"), UDEnum (ident "False")]
-tList = TConstr [ident "a"] (TList baseLibPos (TVar $ ident "a"))
-tFun = TConstr [(ident "a"),(ident "b")] (TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "b"))
+-- tList = TConstr [ident "a"] (TList baseLibPos (TVar $ ident "a"))
+-- tFun = TConstr [(ident "a"),(ident "b")] (TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "b"))
 
-tString = TAlias (ident "String") $ TApp baseLibPos tList [tChar]
+tString = TAlias (ident "String") $ TList baseLibPos tChar
 
---complex example [a] -> [b]
-tComplex = TConstr [(ident "a"),(ident "b")] $ TApp baseLibPos tFun [TApp baseLibPos tList [TVar $ ident "a"], TApp baseLibPos tList [TVar $ ident "b"]]
-tInstantiation = TApp baseLibPos tComplex [tChar, tNum]
--- TODO remove the example
+baseLibTypes = [tUnit, tChar, tNum, tBool, tString]
 
 type Substitution = [(Ident, Type)]
 
@@ -56,6 +64,8 @@ simplify (TApp pos (TConstr ids tc) ts) | length ids == length ts = do
                                             tss <- mapM simplify ts
                                             return $ zip (uids ids) tss `apply` t
                                         | otherwise = posFail pos "Incorrect number of type parameters"
+simplify tt@(TApp _ t@(TNamed{}) _) = return tt
+simplify (TApp pos t@(TAlias{}) ts) = do t' <- simplify t; simplify (TApp pos t' ts)
 simplify t@(TApp pos _ _) = posFail pos $ "Not a type constructor: "++show t
 simplify (TConstr ids tc) = return . TConstr ids =<< simplify tc
 simplify (TParenthesis t) = simplify t
@@ -129,6 +139,7 @@ mgu pos t (TAlias _ t') = mgu pos t t'
 mgu pos (TFunction _ t1 t2) (TFunction _ t1' t2') =
     mergeApply pos nullSubst $ zip [t1,t2] [t1', t2']
 mgu pos (TTuple ts) (TTuple ts') =
+    if length ts' > length ts then posFail pos "Tuple with not enough elements" else
     mergeApply pos nullSubst (zip ts ts')
 
 mgu pos (TList _ t) (TList _ t') = mgu pos t t'
@@ -151,10 +162,15 @@ mgu pos (TRecord rfts) (TRecord rftsExpected) = do
         recFType (RecordFieldType (Identifier id _) t) = (id, t)
 
 mgu pos (TUnit _) (TUnit _) = return nullSubst
-mgu pos (TNamed i) (TNamed i') | i == i' = return nullSubst
+mgu pos (TNamed (Identifier i _)) (TNamed (Identifier i' _)) | i == i' = return nullSubst
 
 mgu pos (TVar (Identifier u _)) t = varBind pos u t
 mgu pos t (TVar (Identifier u _)) = varBind pos u t
+
+mgu pos (TNamed (Identifier i _)) (TApp _ (TNamed (Identifier i' _)) ts) | i == i' = return nullSubst
+mgu pos (TApp _ t ts) (TApp _ t' ts') = do
+    s <- mgu pos t t'
+    mergeApply pos s (zip ts ts')
 
 mgu pos t1 t2 = posFail pos $ expected t2 actual t1 "Types do not unify"
 
@@ -226,11 +242,14 @@ exact :: SourcePos -> Type -> Type -> TI ()
 exact pos t1 t2 = do
     st1 <- simplify t1
     st2 <- simplify t2
-    if st1 == st2 then return ()
-    else posFail pos (expected t2 actual t1 "Types do not match")
+    if st1 == st2 then return () -- TODO change == to equiv
+    else posWarn pos (expected t2 actual t1 "Types do not match")
+
+posWarn :: (MonadTrans f) => SourcePos -> String -> f IO ()
+posWarn pos msg = lift $ putStrLn ("WARNING\t"++show pos ++ "\n  "++msg)
 
 expected :: Type -> a -> Type -> String -> String
-expected tex _ tact msg = msg ++ "\n\tExpected: "++show tex++"\n\tActual: "++show tact
+expected tex _ tact msg = msg ++ "\n\tExpected: "++show tex++"\n\tActual:   "++show tact
 actual :: ()
 actual = ()
 
@@ -275,7 +294,9 @@ tiLit (Float _) = return tNum
 tiLit UnitValue = return tUnit
 
 tiExp :: [Assumption] -> Expression -> TI Type
-tiExp as (EVariable id) = trace ("lookup "++show id) $ find id $ trace ("database "++show as) as
+tiExp as (EVariable id@(Identifier iid pos)) = do
+    t <- find id as -- >>= anonimize pos
+    trace ("lookup \""++iid++"\" of "++show t) return t
 tiExp as (ELiteral pos lit) = tiLit lit
 tiExp as (EParenthesis e) = tiExp as e
 tiExp as (ENegative pos e) = do
@@ -292,7 +313,8 @@ tiExp as (EOp pos el op er) = do
     return $ funResult simtop 2
 tiExp as (ETyped pos e t) = do
     t' <- tiExp as e
-    unify pos t' t
+    ta <- anonimize pos t
+    unify pos t' ta
     return t'
 tiExp as (EApplication pos eapp es) = do
     stap <- tiExp as eapp >>= simplify >>= anonimize pos
@@ -321,11 +343,13 @@ tiExp as (ERecordField pos e id) = do
         recField ((RecordFieldType (Identifier id pos) t):rfts) iid@(Identifier id' _) | id == id' = Just t
                             | otherwise = recField rfts iid
 tiExp as (ELet pos bp elet econt) = do
-    (as', t, tvs) <- tiBPat as bp
-    t' <- tiExp as' elet
+    trace "ELet  --------" return ()
+    (asG, asL, t, tvs) <- tiBPat bp
+    t' <- tiExp (asG ++ asL ++ as) elet
     unify pos t' t
     materializeRecords pos tvs
-    as'' <- applySubst as'
+    trace "ELet end -----" return ()
+    as'' <- applySubst (asG ++ as)
     tiExp as'' econt
 tiExp as (EDo pos edo econt) = do
     t <- tiExp as edo
@@ -374,9 +398,15 @@ tiExp as (EListSequence pos efrom eto) = do
 tiExp as (ERecord pos rfas) = do
     rfts <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
     return $ TRecord rfts
+tiExp as (EMatch pos e alts) = do
+    t <- tiExp as e
+    (pt, et) <- foldM (\(pt', et') alt -> do (ptt, ett) <- tiAlt as alt; return (ptt:pt', ett:et')) ([],[]) alts
+    foldM_ (\t1 t2 -> do unify pos t1 t2; return t2) (head et) (tail et)
+    trace ("Unifying patterns") return ()
+    foldM_ (\t1 t2 -> do unify pos t1 t2; return t2) t pt
+    return $ head et
 -- TODO EListComprehension
 -- TODO ERecordUpdate
--- TODO EMatch
 
 materializeRecords pos = mapM_ (\id -> do chk <- isRecordType id; if chk then do t <- popRecordField id; unify pos t id else return ())
 
@@ -389,48 +419,102 @@ makeFun :: SourcePos -> [Type] -> Type -> Type
 makeFun pos [] t = t
 makeFun pos (h:t') t = TFunction pos h $ makeFun pos t' t
 
-tiBPat :: [Assumption] -> BindPattern -> TI ([Assumption], Type, [Type])
-tiBPat as (BParenthesis bp) = tiBPat as bp
-tiBPat as (BOp pos op ps) = 
-    case ps of
-        [] -> tiBPat as (BVariable (opId op pos))
-        _ -> tiBPat as (BFunctionDecl (opId op pos) ps)
-tiBPat as (BWildCard pos) = do n <- newTVar pos; return (as, n, [])
-tiBPat as (BVariable (Identifier id pos)) = do
-    n <- newTVar pos
-    return ((id :>: n):as, n, [n])
-tiBPat as (BList pos bps) = do
-    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, t, tvv) <- tiBPat as'' bp; return (ass, t:ts', tvv ++ tvs')) (as, [], []) bps
-    foldM_ (\l r -> do unify pos l r; return r) (head ts) (tail ts)
-    let tss = reverse ts
-    return (as', TList pos $ head tss, tvs)
-tiBPat as (BTuple pos bps) = do
-    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, t, tvv) <- tiBPat as'' bp; return (ass, t:ts', tvv ++ tvs')) (as, [], []) bps
+tiAlt :: [Assumption] -> Alternate -> TI (Type, Type)
+tiAlt as (Alternate pos pat e) = do
+    (as', pt, tvs) <- tiPat as pat
+    et <- tiExp as' e
+    materializeRecords pos tvs
+    return (pt, et)
+
+tiPat :: [Assumption] -> Pattern -> TI ([Assumption], Type, [Type])
+tiPat as (PParenthesis p) = tiPat as p
+tiPat as (PVariable i@(Identifier id pos)) =
+    let v = findMaybe id as in
+    if isJust v && isUpper (head id) then
+        return (as, fromJust v, [])
+    else do
+        n <- newTVar pos
+        return ((id:>:n):as, n, [n])
+tiPat as (PLiteral pos lit) = do
+    t <- tiLit lit
+    return (as, t, [])
+tiPat as (PApplication pos i@(Identifier id _) pat) = do
+    at <- find i as >>= anonimize pos
+    case at of
+        TFunction pos' t1 t2 -> do
+            (as', t1', tvs) <- tiPat as pat
+            unify pos' t1' t1
+            return (as', t2, tvs)
+        _ -> posFail pos $ "`"++id++"` is not a applicative constructor"
+tiPat as (PTuple pos ps) = do
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') p -> do (ass, t, tvv) <- tiPat as'' p; return (ass, t:ts', tvv ++ tvs')) (as, [], []) ps
     return (as', TTuple $ reverse ts, tvs)
-tiBPat as (BListHead pos bphead bptail) = do
-    (ash, th, tvh) <- tiBPat as bphead
-    (ast, tt, tvt) <- tiBPat ash bptail
+tiPat as (PList pos ps) = do
+    case ps of
+        [] -> do
+            n <- newTVar pos
+            return (as, TList pos n, [])
+        _ -> do
+            (as', ts, tvs) <- foldM (\(as'', ts', tvs') p -> do (ass, t, tvv) <- tiPat as'' p; return (ass, t:ts', tvv ++ tvs')) (as, [], []) ps
+            foldM_ (\l r -> do unify pos l r; return r) (head ts) (tail ts)
+            return (as', TList pos $ head ts, tvs)
+tiPat as (PListHead pos phead ptail) = do
+    (ash, th, tvh) <- tiPat as phead
+    (ast, tt, tvt) <- tiPat ash ptail
     sth <- simplify th
     stt <- simplify tt
     unify pos stt (TList pos sth)
     return (ast, stt, tvh ++ tvt)
-tiBPat as (BRecord pos rbps) = do
-    (as', rfts_, tvs) <- foldM (\(as'', rfts', tvs') (RecordBindPattern pos id bp) -> do (ass, t, tvv) <- tiBPat as'' bp; return (ass, (id,t):rfts', tvv ++ tvs'))  (as, [], []) rbps
+tiPat as (PListContains pos e) = do
+    t <- tiExp as e
+    return (as, TList pos t, [])
+tiPat as (PWildCard pos) = do
+    n <- newTVar pos
+    return (as, n, [])
+
+    
+
+tiBPat :: BindPattern -> TI ([Assumption], [Assumption], Type, [Type])
+tiBPat (BParenthesis bp) = tiBPat bp
+tiBPat (BOp pos op ps) = 
+    case ps of
+        [] -> tiBPat (BVariable (opId op pos))
+        _ -> tiBPat (BFunctionDecl (opId op pos) ps)
+tiBPat (BWildCard pos) = do n <- newTVar pos; return ([], [], n, [])
+tiBPat (BVariable (Identifier id pos)) = do
+    n <- newTVar pos
+    return ([id :>: n], [], n, [n])
+tiBPat (BList pos bps) = do
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, t:ts', tvv ++ tvs')) ([], [], []) bps
+    foldM_ (\l r -> do unify pos l r; return r) (head ts) (tail ts)
+    let tss = reverse ts
+    return (as', [], TList pos $ head tss, tvs)
+tiBPat (BTuple pos bps) = do
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, t:ts', tvv ++ tvs')) ([], [], []) bps
+    return (as', [], TTuple $ reverse ts, tvs)
+tiBPat (BListHead pos bphead bptail) = do
+    (ash, _, th, tvh) <- tiBPat bphead
+    (ast, _, tt, tvt) <- tiBPat bptail
+    sth <- simplify th
+    stt <- simplify tt
+    unify pos stt (TList pos sth)
+    return (ast ++ ash, [], stt, tvh ++ tvt)
+tiBPat (BRecord pos rbps) = do
+    (as', rfts_, tvs) <- foldM (\(as'', rfts', tvs') (RecordBindPattern pos id bp) -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, (id,t):rfts', tvv ++ tvs'))  ([], [], []) rbps
     let rfts = map (\(id, t) -> RecordFieldType id t) rfts_
-    return (as', TRecord rfts, tvs)
-tiBPat as (BFunctionDecl (Identifier id pos) ps) = do
+    return (as', [], TRecord rfts, tvs)
+tiBPat (BFunctionDecl (Identifier id pos) ps) = do
     fn <- newTVar pos
     as' <- foldM (\as_ p -> case p of
                                 Parameter (Identifier i pos') -> do
                                     n <- newTVar pos'
                                     return $ (i :>: n) : as_
-                                _ -> return as_) as ps
-    let as'' = (id :>: fn) : as'
+                                _ -> return as_) [] ps
     t <- newTVar pos
-    argT <- mapM (parType as'') ps
+    argT <- mapM (parType ((id:>:fn):as')) ps
     trace ("Bind Function `"++id++"` of "++show (makeFun pos argT t)) return ()
     unify pos fn $ makeFun pos argT t
-    return (as'', t, argT)
+    return ([id :>: fn], as', t, argT)
 
 anonimize :: SourcePos -> Type -> TI Type
 anonimize pos t@(TVar _) = return t
@@ -464,6 +548,10 @@ deepAnonimize = mapM anonA
             t2' <- anonT t2
             return $ TFunction pos t1' t2'
         anonT (TRecord rfts) = mapM (\(RecordFieldType id t) -> do t' <- anonT t; return $ RecordFieldType id t') rfts >>= return . TRecord
+        anonT (TApp pos t ts) = do
+            t' <- anonT t
+            ts' <- mapM anonT ts
+            return $ TApp pos t' ts'
         anonT t = return t
 
 funOf :: SourcePos -> [Type] -> TI Type
@@ -479,20 +567,23 @@ tiUnifyExp as (e, t) pos = do
     t' <- tiExp as e
     unify pos t' t
 
-prepValDecl :: ([Assumption], [(Expression, Type, [Type], SourcePos)]) -> ValueDeclaration -> TI ([Assumption], [(Expression, Type, [Type], SourcePos)])
 prepValDecl (as, etts) (Val pos bp e) = do
-    (as', t, tvs) <- tiBPat as bp
-    return (as', (e, t, tvs, pos):etts)
+    (asG, asL, t, tvs) <- tiBPat bp
+    return (as++asG, (asG, asL, e, t, tvs, pos):etts)
 
 tiValDecls :: [Assumption] -> [Assumption] -> [ValueDeclaration] -> TI [Assumption]
 tiValDecls annotations as ds = do
     anonAs <- deepAnonimize as
     (as', etts) <- foldM prepValDecl (anonAs,[]) ds
-    as'' <- foldM (\ass (e, t, tvs, p) -> do
-                            t' <- tiExp ass e
+    (as'', das) <- foldM (\(ass, das) (asG, asL, e, t, tvs, p) -> do
+                            trace "ELet  --------" return ()
+                            t' <- tiExp (asL++ass) e
                             unify p t' t
                             materializeRecords p tvs
-                            applySubst ass) as' etts
+                            trace "ELet End -----" return ()
+                            ass' <- applySubst ass
+                            asG' <- applySubst asG
+                            return (ass', asG' ++ das)) (as', []) etts
     -- ts <- mapM (\(Val (Identifier _ pos) _) -> newTVar pos) ds
     -- let ids = map (\(Val (Identifier id _) _) -> id) ds
     --     idPos = map (\(Val (Identifier id pos) _) -> (id, pos)) ds
@@ -502,13 +593,15 @@ tiValDecls annotations as ds = do
     -- s <- subst
     -- let ts' = apply s ts
     --     as'' = zipWith (:>:) ids ts'
+    trace "Checking annotations" return ()
     mapM_ (\(id :>: t) -> case findMaybe id annotations of
                             Nothing -> return ()
                             Just t' -> do
                                 let p = baseLibPos --TODO posOfType t'
                                 unify p t t'
                                 exact p t t') as''
-    return as''
+    das' <- applySubst das
+    return das'
 
 testValDecl = [
     Val baseLibPos (BVariable $ ident "x") 
@@ -540,15 +633,20 @@ ignore = "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit
 
 boolVal = ["True" :>: tBool, "False" :>: tBool]
 
-baseLibTypes = [
+baseLibAssumptions = [
     "(+)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
     "(-)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
     "(*)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
     "(/)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
     "(**)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(&&)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tBool tBool),
-    "(||)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tBool tBool),
+    "(&&)" :>: TFunction baseLibPos tBool (TFunction baseLibPos tBool tBool),
+    "(||)" :>: TFunction baseLibPos tBool (TFunction baseLibPos tBool tBool),
+    "(==)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
+    "(<=)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
+    "(>=)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
+    "(++)" :>: TFunction baseLibPos (TList baseLibPos $ TVar $ ident "a") (TFunction baseLibPos (TList baseLibPos $ TVar $ ident "a") (TList baseLibPos $ TVar $ ident "a")),
     "id" :>: TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "a"),
     "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit,
+    "print" :>: TFunction baseLibPos (TVar $ ident "a") tUnit,
     "True" :>: tBool, "False" :>: tBool
  ]

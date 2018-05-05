@@ -45,7 +45,11 @@ module AST where
     show (RecordFieldType (Identifier id _) t) = id ++ " :: " ++ show t
   
   data UnionDefinition = UDEnum Identifier | UDTyped Identifier Type
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Ord)
+
+  instance Show UnionDefinition where
+    show (UDEnum (Identifier id _)) = id
+    show (UDTyped (Identifier id _) t) = id ++ "("++show t++")"
   
   data Type
       = TFunction SourcePos Type Type
@@ -67,14 +71,14 @@ module AST where
       (case t1 of
         TFunction{} -> show (TParenthesis t1)
         _ -> show t1) ++ " -> " ++ show t2
-    show (TTuple ts) = "(" ++ intercalate ", " (map show ts) ++ ")"
+    show (TTuple ts) = intercalate " * " (map show ts)
     show (TList _ t) = "[" ++ show t ++ "]"
     show (TUnit _) = "()"
-    show (TNamed (Identifier id _)) = id
+    show (TNamed (Identifier id _)) = "$"++id --TODO remove $ sign
     show (TAlias (Identifier id _) _) = id
     show (TRecord rfts) = "{" ++ intercalate "; " (map show rfts) ++ "}"
     show (TParenthesis t) = "("++ show t ++ ")"
-    show (TUnion (Identifier id _) _) = id
+    show (TUnion (Identifier id _) uds) = id ++ "{{"++intercalate "|" (map show uds)++"}}"
     show (TVar (Identifier id _)) = id
     show (TConstr ids t) = "|<"++intercalate "," (map (\(Identifier id _) -> id) ids) ++ "> => " ++ show t ++"|"
     show (TApp _ t ts) = show t ++ "<" ++ intercalate ", " (map show ts) ++ ">"

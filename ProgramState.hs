@@ -5,6 +5,8 @@ import System.IO
 import System.Exit
 import Debug.Trace
 
+import Control.Monad.Trans.Maybe
+
 data Tree a = Leaf | Node (Tree a) a (Tree a)
     deriving(Eq, Show)
 
@@ -12,7 +14,7 @@ insertTree :: Ord a => a -> b -> Tree (a,b) -> Tree (a,b)
 insertTree key value Leaf = Node Leaf (key, value) Leaf
 insertTree key value (Node tl (nk, nv) tr) | key == nk = Node tl (key, value) tr
                                            | key > nk = Node tl (nk, nv) (insertTree key value tr)
-                                           | key < nk = Node (insertTree key value tr) (nk, nv) tr
+                                           | key < nk = Node (insertTree key value tl) (nk, nv) tr
 
 findTree :: Ord a => a -> Tree (a,b) -> Maybe b
 findTree key Leaf = Nothing
@@ -25,13 +27,13 @@ type Store = Tree (Ident, Either Function Value)
 -- Right Function should be used outside of LetExpression with recursive definition
 
 data Number = Int Integer | Float Double
-    deriving(Eq, Show)
+    deriving(Eq, Ord, Show)
 type Record = [(Ident, Value)]
 type List = [Value]
 type Tuple = [Value]
 type Union = (Ident, UnionValue)
 data UnionValue = UnionEnum | UnionWithValue Value
-    deriving(Eq, Show)
+    deriving(Eq, Ord, Show)
 data Function = 
     Func Store Parameter Expression 
     | Constr Ident
@@ -41,8 +43,13 @@ instance Eq Function where
     Func s p e == Func s' p' e' = s == s' && p == p' && e == e'
     _ == _ = False
 instance Show Function where
-    show (Func s p e) = show s ++ " (" ++ show p ++") -> " ++ show e
+    show (Func s p e) = "(" ++ show p ++") -> " ++ show e
+    show (Constr id) = id++"{}"
     show _ = "BuiltIn function"
+
+instance Ord Function where
+    f1 <= f2 = False
+    f1 >= f2 = False
 
 data Parameter = BoundParameter Ident | WildCard | Unit
     deriving(Eq, Show)
@@ -56,7 +63,7 @@ data Value =
     | TupleValue Tuple
     | UnionValue Union
     | FunctionValue Function
-    deriving(Eq, Show)
+    deriving(Eq, Ord, Show)
 
 -- data Type = Type [Ident] TypeKind
 --     deriving(Eq, Show)
@@ -94,7 +101,7 @@ data Expression =
 
 type Operator = Ident
 
-type Alternate = Value -> Maybe (Store, Expression)
+type Alternate = Value -> Store -> MaybeT IO Expression
 
 instance Eq Alternate where
     _ == _ = False
@@ -103,12 +110,12 @@ instance Show Alternate where
 
 runProgram :: Store -> [String] -> IO ()
 runProgram s args =
-    let mmain = getVar "main" s in
+    let mmain = getRec "main" s in
     case mmain of
         Nothing -> error "Function `main` not found"
-        Just main ->
+        Just (maine, s') ->
             let argsValue = ListValue $ map stringListToValue args in do
-                v <- eval (ApplicationExpression (ValueExpression main) (VariableExpression "args")) (withVar "args" argsValue s)
+                v <- eval (ApplicationExpression (maine) (VariableExpression "args")) (withVar "args" argsValue $ withRec "main" maine s' s)
                 case v of
                     NumberValue i -> 
                         case intOfNumber i of
@@ -116,8 +123,8 @@ runProgram s args =
                             ii -> exitWith (ExitFailure $ fromIntegral ii)
                     _ -> error "Function `main` returned a non int value"
 
-nativeError :: Store -> Value -> IO (Value, Store)
-nativeError _ v =
+nativeError :: Value -> IO Value
+nativeError v =
     let s = stringListFromValue v in
         error ("ERROR: " ++ s)
 
@@ -141,8 +148,8 @@ intOfNumber (Int i) = i
 intOfNumber (Float f) = round f
 
 
-eval :: Expression -> Store -> IO Value
-eval (ValueExpression val) _ = trace ("eval val "++show val) return val
+eval :: Expression -> Store ->  IO Value
+eval (ValueExpression val) _ = trace ("eval Value of "++show val) return val
 eval (NegativeExpression e) s = eval e s >>= neg
     where
         neg (NumberValue (Int i)) = return (NumberValue (Int (-i)))
@@ -153,11 +160,12 @@ eval (LetExpression id el eo) s = do
 eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
     case getVar id s of
-        Just val -> trace ("eval "++id++" - "++ show val) $ return val
+        Just val -> 
+            trace ("eval "++id++" - "++ show val) $ return val
         Nothing -> 
             case getRec id s of
                 Just (e, s') -> eval e (withRec id e s' s')
-                Nothing -> error ("Variable `"++id++"` is not bound")
+                Nothing -> fail ("Variable `"++id++"` is not bound")
 eval (ListConstruction eli) s = unpack [] $ map (\e -> eval e s) eli
         where
             unpack acc (h:t) = do
@@ -180,11 +188,11 @@ eval (RecordFieldExpression e id) s = do
     val <- eval e s
     case val of
         RecordValue d -> case lookup id d of
-                            Nothing -> error ("Record withour field `"++id++"`")
+                            Nothing -> fail ("Record withour field `"++id++"`")
                             Just v -> return v
 eval (RecordUpdateExpression id e) s =
     case getVar id s of
-        Nothing -> error ("Variable `"++id++"` is not bound")
+        Nothing -> fail ("Variable `"++id++"` is not bound")
         Just v1 -> case v1 of
                     RecordValue d1 -> do
                         recr <- eval e s
@@ -204,14 +212,17 @@ eval (IfDoExpression econd edo econt) s = do
 eval (LambdaExpression p e) s = return $ FunctionValue $ Func s p e
 eval (MatchExpression e ali) s = do
     val <- eval e s
-    case option ali val of
-        Just (s', ee) -> eval ee s'
-        Nothing -> error "Unmatched case"
+    m <- option ali val s
+    case m of
+        Just ee -> eval ee s
+        Nothing -> fail "Unmatched case"
     where
-        option (f:ft) val =
-            case f val of
-                Nothing -> option ft val
-                Just e -> Just e
+        option :: [Alternate] -> Value -> Store -> IO (Maybe Expression)
+        option (f:ft) val s = do
+            m <- runMaybeT $ f val s
+            case m of
+                Nothing -> option ft val s
+                Just e -> return $ Just e
 eval (ApplicationExpression ef ev) s = do
     fun <- eval ef s
     val <- eval ev s
@@ -270,12 +281,65 @@ operatorSet = [
                 ("(*)", times),
                 ("(/)", divide),
                 ("(**)", power),
-                ("(==)", equals)
+                ("(&&)", logicalAnd),
+                ("(||)", logicalOr),
+                ("(==)", equals),
+                ("(<=)", lessEqThan),
+                ("(>=)", greaterEqThan),
+                ("(++)", concatenate),
+                ("id", identityFunction),
+                ("ignore", ignoreFunction),
+                ("print", printFunction),
+                ("True", true),
+                ("False", false),
+                ("__list_sequence", listSeq),
+                ("die", FunctionValue $ BuiltIn nativeError),
+                ("head", listHead),
+                ("tail", listTail),
+                ("(!!)", arrNth)
         ]
 
 equals :: Value
 equals = builtInOp $ \a b -> if a == b then true else false
 
+lessEqThan = builtInOp inner
+    where
+        inner (NumberValue a) (NumberValue b) = if a <= b then true else false
+        inner (ListValue l) (ListValue r) = if l <= r then true else false
+greaterEqThan = builtInOp inner
+    where
+        inner (NumberValue a) (NumberValue b) = if a >= b then true else false
+        inner (ListValue l) (ListValue r) = if l >= r then true else false
+
+listSeq = builtInOp $ \(NumberValue from) (NumberValue to) -> generate from to
+    where
+        generate (Int i) (Int j) = mkIntList [i..j]
+        generate (Int i) (Float j) = mkFloatList [fromInteger i..j]
+        generate (Float i) (Int j) = mkFloatList [i..fromInteger j]
+        generate (Float i) (Float j) = mkFloatList [i..j]
+        mkIntList = ListValue . map (NumberValue . Int)
+        mkFloatList = ListValue . map (NumberValue . Float)
+
+listHead = FunctionValue $ BuiltIn (\(ListValue ls) -> return $ head ls)
+listTail = FunctionValue $ BuiltIn (\(ListValue ls) -> return $ ListValue $ tail ls)
+
+arrNth = builtInOp inner
+    where 
+        inner (TupleValue vs) (NumberValue (Int n)) = vs !! fromInteger n
+        inner (ListValue vs) (NumberValue (Int n)) = vs !! fromInteger n
+        inner _ _ = error "ERROR: Index out of range"
+
+identityFunction = FunctionValue $ BuiltIn (\a -> return a)
+ignoreFunction = FunctionValue $ BuiltIn (\a -> return UnitValue)
+printFunction = FunctionValue $ BuiltIn (\a -> print a >> return UnitValue)
+
+concatenate = builtInOp inner
+    where
+        inner (ListValue l) (ListValue r) = ListValue $ l ++ r
+
+logicalAnd = builtInOp $ \a b -> if a == b && a == true then true else false
+
+logicalOr = builtInOp $ \a b -> if a == true || b == true then true else false
 
 true = UnionValue $ ("True", UnionEnum)
 false = UnionValue $ ("False", UnionEnum)

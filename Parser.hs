@@ -606,7 +606,7 @@ pBindRecord = do
 pBindList :: Stream s m Char => ParsecT s u m BindPattern
 pBindList = do
     pos <- getPosition
-    (brackets $ sepBy pBindPattern comma) >>= return . BList pos
+    (brackets $ sepBy1 pBindPattern comma) >>= return . BList pos
 
 
 pIdentifier :: Stream s m Char => ParsecT s u m Identifier
