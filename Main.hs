@@ -42,5 +42,6 @@ interpret file args = do
                     -- print program
                     -- putStrLn ""
                     store <- translate program
+                    print store
                     runProgram store args
                 Left err -> print err

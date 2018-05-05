@@ -15,8 +15,8 @@ import Data.Functor.Identity
 
 lexer :: Stream s m Char => Tok.GenTokenParser s u m
 lexer = Tok.makeTokenParser $ emptyDef{
-            Tok.commentStart = "(*",
-            Tok.commentEnd = "*)",
+            Tok.commentStart = "/*",
+            Tok.commentEnd = "*/",
             Tok.commentLine = "//",
             Tok.nestedComments = True,
             Tok.identStart = letter <|> char '_',

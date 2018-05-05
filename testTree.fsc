@@ -7,13 +7,13 @@ let insert x t =
     | Node((tl, y, tr)) -> if x <= y then Node((insert(x, tl), y, tr))
                            else Node((tl, y, insert(x, tr)))
 
+let errTest = plusOne(Node((Leaf, 2, Leaf)))
+
 @plusOne :: Tree<Number> -> Tree<Number>
 let plusOne t2 =
     match t2 with
     | Leaf -> Leaf
     | Node((tl2, x2, tr2)) -> Node((plusOne(tl2), x2+1, plusOne(tr2)))
-
-let errTest = plusOne(Node((Leaf, 2, Leaf)))
 
 @main :: [String] -> Number
 let main args =

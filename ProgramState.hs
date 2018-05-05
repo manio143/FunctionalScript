@@ -139,7 +139,7 @@ runProgram :: Store -> [String] -> IO ()
 runProgram s args =
     let mmain = getRec "main" s in
     case mmain of
-        Nothing -> error "Function `main` not found"
+        Nothing -> errorT "Function `main` not found"
         Just (maine, s') ->
             let argsValue = ListValue $ map stringListToValue args in do
                 v <- eval (ApplicationExpression (maine) (VariableExpression "args")) (withVar "args" argsValue $ withRec "main" maine s' s)
@@ -148,12 +148,17 @@ runProgram s args =
                         case intOfNumber i of
                             0 -> exitSuccess
                             ii -> exitWith (ExitFailure $ fromIntegral ii)
-                    _ -> error "Function `main` returned a non int value"
+                    _ -> errorT "Function `main` returned a non int value"
 
 nativeError :: Value -> IO Value
 nativeError v =
     let s = stringListFromValue v in
-        error ("ERROR: " ++ s)
+        errorT s
+
+errorT :: String -> IO a
+errorT msg = do
+    putStrLn $ "ERROR: "++msg
+    error "Terminated."
 
 stringListFromValue :: Value -> String
 stringListFromValue (ListValue l) =
@@ -186,13 +191,13 @@ eval (LetExpression id el eo) s = do
     eval eo (withVar id val s)
 eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
-    case getVar id s of
+    case  getVar id s of
         Just val -> 
-            {-trace ("eval "++id++" - "++ show val) $-} return val
+            trace ("eval "++id++" - "++ show val) $ return val
         Nothing -> 
-            case getRec id s of
+            case trace ("eval recursive "++id)getRec id s of
                 Just (e, s') -> eval e (withRec id e s' s')
-                Nothing -> fail ("Variable `"++id++"` is not bound")
+                Nothing -> trace (show s) errorT ("Variable `"++id++"` is not bound")
 eval (ListConstruction eli) s = unpack [] $ map (\e -> eval e s) eli
         where
             unpack acc (h:t) = do
@@ -215,11 +220,11 @@ eval (RecordFieldExpression e id) s = do
     val <- eval e s
     case val of
         RecordValue d -> case lookup id d of
-                            Nothing -> fail ("Record withour field `"++id++"`")
+                            Nothing -> errorT ("Record without field `"++id++"`")
                             Just v -> return v
 eval (RecordUpdateExpression id e) s =
     case getVar id s of
-        Nothing -> fail ("Variable `"++id++"` is not bound")
+        Nothing -> errorT ("Variable `"++id++"` is not bound")
         Just v1 -> case v1 of
                     RecordValue d1 -> do
                         recr <- eval e s
@@ -242,7 +247,7 @@ eval (MatchExpression e ali) s = do
     m <- option ali val s
     case m of
         Just ee -> eval ee s
-        Nothing -> fail "Unmatched case"
+        Nothing -> errorT "Unmatched case"
     where
         option :: [Alternate] -> Value -> Store -> IO (Maybe Expression)
         option (f:ft) val s = do
@@ -274,6 +279,10 @@ getRec :: Ident -> Store -> Maybe (Expression, Store)
 getRec id s = case findTree id s of
                 Just (Left (Func s p e)) -> Just (e, s)
                 _ -> Nothing
+
+updateRec :: [Ident] -> Store -> Store -> Store
+updateRec ids env s = 
+    foldl (\s' id -> let Just (e,_) = getRec id s' in withRec id e env s') s ids
 
 builtInOp :: (Value -> Value -> Value) -> Value
 builtInOp f = FunctionValue $
@@ -323,7 +332,9 @@ operatorSet = [
                 ("die", FunctionValue $ BuiltIn nativeError),
                 ("head", listHead),
                 ("tail", listTail),
-                ("(!!)", arrNth)
+                ("(!!)", arrNth),
+                ("toString", toStr),
+                ("map", mapFunction)
         ]
 
 equals :: Value
@@ -356,9 +367,21 @@ arrNth = builtInOp inner
         inner (ListValue vs) (NumberValue (Int n)) = vs !! fromInteger n
         inner _ _ = error "ERROR: Index out of range"
 
+toStr = FunctionValue $ BuiltIn $ \a -> return $ stringListToValue $ show a
+
 identityFunction = FunctionValue $ BuiltIn (\a -> return a)
 ignoreFunction = FunctionValue $ BuiltIn (\a -> return UnitValue)
 printFunction = FunctionValue $ BuiltIn (\a -> print a >> return UnitValue)
+
+mapFunction =  FunctionValue $
+                    BuiltIn (\a -> return $ FunctionValue $
+                        BuiltIn (\b -> inner a b))
+        where
+            inner f (ListValue l) = do
+                l' <- mapM (\v -> eval (ApplicationExpression
+                                        (ValueExpression f)
+                                        (ValueExpression v)) Leaf) l
+                return $ ListValue l'
 
 concatenate = builtInOp inner
     where

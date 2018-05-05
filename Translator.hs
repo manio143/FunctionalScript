@@ -1,3 +1,4 @@
+--{-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
 module Translator where
 
 import AST
@@ -12,7 +13,11 @@ import Debug.Trace
 import Control.Monad.Trans.State
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans
+import Control.Monad.Fix
 import Control.Monad
+
+import Control.Arrow (first)
+import Data.Tuple (uncurry)
 
 import Data.List
 import Data.Char
@@ -32,20 +37,28 @@ translate (Program decls) = evalStateT inner initialInferenceState
         lift $ print types'
         lift $ print annotations'
         lift $ print assumptions'
-        lift $ print valDecls'
         let valDs = divideDependant valDecls'
-        as <- typecheck valDs annotations' assumptions'
+        lift $ print valDs
+        as <- typecheck valDs annotations' assumptions' types'
         lift $ print as
         let st = constructorStore assumptions baseLibStore
         foldM valDeclToStore st valDs
 
-typecheck :: [[ValueDeclaration]] -> [Assumption] -> [Assumption] -> TI [Assumption]
-typecheck valDs annotations as = foldM (\as' vd -> do das <- tiValDecls annotations as' vd; return (das++as')) (as ++ baseLibAssumptions) valDs
+typecheck :: [[ValueDeclaration]] -> [Assumption] -> [Assumption]  -> [Type] -> TI [Assumption]
+typecheck valDs annotations as types = do
+    setTypesDictionary (zip (map nameT types) types)
+    foldM (\as' vd -> do das <- tiValDecls annotations as' vd; return (das++as')) (as ++ baseLibAssumptions) valDs
+
+nameT x = case x of
+    TAlias (Identifier id _) _ -> id
+    TNamed (Identifier id _) -> id
+    TUnion (Identifier id _) _ -> id
+    TConstr _ t -> nameT t
 
 checkTypes :: (Monad m) => [Either (Identifier, Type) Type] -> [Assumption] -> [Assumption] -> [ValueDeclaration] -> m ([Type], [Assumption], [Assumption], [ValueDeclaration])
 -- make sure that for each tvar in angles there is a TVar in body,
--- make sure no undefined name is used
--- make sure you cannot do a cyclic dependency in an alias or a record
+-- DONE make sure no undefined name is used
+-- ?? make sure you cannot do a cyclic dependency in an alias or a record
 -- DONE change lowerletter TNamed to TVar
 -- check for type redefinition
 checkTypes types annotations assumptions valDecls = do -- TODO above
@@ -58,12 +71,7 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
         return (types', annotations', assumptions', valDecls')
     where
         namesOfTypes [] acc = reverse acc
-        namesOfTypes (h:t) acc = namesOfTypes t (name h : acc)
-        name x = case x of
-                    TAlias (Identifier id _) _ -> id
-                    TNamed (Identifier id _) -> id
-                    TUnion (Identifier id _) _ -> id
-                    TConstr _ t -> name t
+        namesOfTypes (h:t) acc = namesOfTypes t (nameT h : acc)
 
         eitherUT (Right t) = t
         eitherUT (Left (_, t)) = t
@@ -81,7 +89,7 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
                 Just (TConstr{}) -> posFail pos "Cannot extend generic records"
 
         mergeRec rfts rftsN = do
-            mapM_ (\(RecordFieldType id@(Identifier _ pos) t) -> if elemRec id rfts then posFail pos "Redefintion of record fields is not allowed" else return ()) rftsN
+            mapM_ (\(RecordFieldType id@(Identifier _ pos) t) -> if elemRec id rfts then posFail pos $ "Redefintion of record fields is not allowed ("++show id++")" else return ()) rftsN
             return $ rfts ++ rftsN
         elemRec i@(Identifier id _) ((RecordFieldType (Identifier id' _) _):rfts) | id == id' = True
                | otherwise = elemRec i rfts
@@ -182,10 +190,116 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
         checkType _ t = return t
 
 
+data SVD = SVD ValueDeclaration [AST.Ident] deriving (Eq, Show)
+
+data PartialOrdering = PEQ | PLT | PGT | PN deriving (Eq, Show)
+
+compareSVD l r = if l `depends` r then
+                    if r `depends` l then PEQ else PGT
+                else if r `depends` l then PLT
+                else PN
+        where
+            names (Val _ bp _) = namesB bp
+            depends (SVD vdl lids) (SVD vdr rids) = any (\n -> elem n rids) (names vdl)
+
+topoSort :: [SVD] -> [SVD]
+topoSort svds = foldl makePrecede [] dependants
+    where
+        dependants :: [(SVD, [SVD])]
+        dependants = map (\svd -> 
+            (svd, filter (\svd' -> 
+                            let c = compareSVD svd svd' in
+                            c == PLT || c == PEQ) 
+                        (svds \\ [svd]))) svds
+        makePrecede ts (svd, deps) = nub $ case elemIndex svd ts of
+                                            Just i  -> uncurry(++) $ first(++deps) $ splitAt i ts
+                                            _       -> ts ++ deps ++ [svd]
+
+namesB (BParenthesis bp) = namesB bp
+namesB (BOp _ op _) = [opIdent op]
+namesB (BWildCard _) = []
+namesB (BVariable (Identifier id _)) = [id]
+namesB (BFunctionDecl (Identifier id _) _) = [id]
+namesB (BListHead _ bph bpt) = namesB bph ++ namesB bpt
+namesB (BRecord _ rbps) = foldl (\acc (RecordBindPattern _ _ bp) -> namesB bp ++ acc) [] rbps
+namesB (BList _ bps) = foldl (\acc bp -> namesB bp ++ acc) [] bps
+namesB (BTuple _ bps) = foldl (\acc bp -> namesB bp ++ acc) [] bps
+
 divideDependant :: [ValueDeclaration] -> [[ValueDeclaration]]
 -- group mutually recursive declarations 
 -- sort based on dependency
-divideDependant vds = map (:[]) (reverse vds) -- TODO implement
+divideDependant vds = 
+    let d = map getDependencies (reverse vds)
+    in sortTopo d
+    where
+        sortTopo d = 
+            let sorted = topoSort d in 
+            trace (show sorted) map (\l -> map (\(SVD vd _) -> vd) l) $ group sorted []
+        group [] acc = reverse acc
+        group (h:t) ta = let mut = h : filter (\h' -> compareSVD h h' == PEQ) t in group (t \\ mut) (mut:ta)
+
+        getDependencies v@(Val pos bp e) = SVD v $ getDepExp e $ boundB bp
+        boundB (BParenthesis bp) = boundB bp
+        boundB (BOp _ op ps) = opIdent op : foldl (\a p -> case p of
+                                                            Parameter (Identifier id _) -> id : a
+                                                            _ -> a) [] ps
+        boundB (BWildCard _) = []
+        boundB (BVariable (Identifier id _)) = [id]
+        boundB (BFunctionDecl (Identifier id _) ps) = 
+            id : foldl (\a p -> case p of
+                                    Parameter (Identifier id _) -> id : a
+                                    _ -> a) [] ps
+        boundB (BListHead _ bph bpt) = boundB bph ++ boundB bpt
+        boundB (BRecord _ rbps) = foldl (\acc (RecordBindPattern _ _ bp) -> boundB bp ++ acc) [] rbps
+        boundB (BList _ bps) = foldl (\acc bp -> boundB bp ++ acc) [] bps
+        boundB (BTuple _ bps) = foldl (\acc bp -> boundB bp ++ acc) [] bps
+
+        getDepExp (EOp _ e1 op e2) names = 
+            if elem (opIdent op) names then 
+                nub $ getDepExp e1 names ++ getDepExp e2 names 
+            else nub $ [opIdent op] ++ getDepExp e1 names ++ getDepExp e2 names
+        getDepExp (ERecordField _ e (Identifier id _)) names = getDepExp e names
+        getDepExp (ETyped _ e _) names = getDepExp e names 
+        getDepExp (EApplication _ e es) names = nub $ foldl (\ns e -> ns ++ getDepExp e names) [] (e:es)
+        getDepExp (ENegative _ e) names = getDepExp e names
+        getDepExp (ELet _ bp el ec) names = nub $ getDepExp el (names ++ boundB bp) ++ getDepExp ec (names ++ namesB bp)
+        getDepExp (ELiteral _ l) names = []
+        getDepExp (EVariable (Identifier id _)) names = if elem id names then [] else [id]
+        getDepExp (EDo _ ed ec) names = nub $ getDepExp ed names ++ getDepExp ec names
+        getDepExp (EParenthesis e) names = getDepExp e names
+        getDepExp (ETuple _ es) names = nub $ foldl (\ns e -> ns ++ getDepExp e names) [] es
+        getDepExp (EList _ es) names = nub $ foldl (\ns e -> ns ++ getDepExp e names) [] es
+        getDepExp (EListSequence _ ef et) names = nub $ getDepExp ef names ++ getDepExp et names
+        getDepExp (EListComprehension pos e comps) names =
+            let fromC = foldl (\ns e -> ns ++ getDepExp e names) [] (map (\(Comprehension _ _ e)->e) comps) in
+            let nn = foldl (\ns bp -> boundB bp ++ ns) names (map (\(Comprehension _ bp _)->bp) comps)
+            in nub $ fromC ++ getDepExp e nn
+        getDepExp (ERecord _ rfas) names = foldl (\ns (RecordFieldAssignment _ _ e) -> ns ++ getDepExp e names) [] rfas
+        getDepExp (ERecordUpdate _ _ rfas) names = foldl (\ns (RecordFieldAssignment _ _ e) -> ns ++ getDepExp e names) [] rfas
+        getDepExp (EIf _ ec et ef) names = nub $ getDepExp ef names ++ getDepExp et names ++ getDepExp ec names
+        getDepExp (EIfDo _ ec et ef) names = nub $ getDepExp ef names ++ getDepExp et names ++ getDepExp ec names
+        getDepExp (ELambda _ params e) names = 
+            getDepExp e $ foldl (\a p -> case p of
+                            Parameter (Identifier id _) -> id : a
+                            _ -> a) names params
+        getDepExp (EMatch _ e alts) names = 
+            nub $ getDepExp e names ++ foldl (\ns (Alternate _ p e) -> 
+                let (bn, nn) = boundP names p in nn ++ ns ++ getDepExp e (names ++ bn)) [] alts
+        
+        boundP :: [AST.Ident] -> Pattern -> ([AST.Ident], [AST.Ident])
+        boundP names (PParenthesis p) = boundP names p
+        boundP names (PWildCard _) = ([],[])
+        boundP names (PVariable (Identifier id _)) = ([id],[])
+        boundP names (PListHead _ ph pt) = 
+            let (a1, b1) = boundP names ph in
+            let (a2, b2) = boundP names pt in
+            (a1++a2, b1++b2)
+        boundP names (PRecord _ rps) = foldl (\(acc,acc') (RecordPattern _ _ p) -> let (b,n) = boundP names p in (b ++ acc, n++acc')) ([],[]) rps
+        boundP names (PList _ ps) = foldl (\(acc,acc') p -> let (b,n) = boundP names p in (b ++ acc, n++acc')) ([],[]) ps
+        boundP names (PTuple _ ps) = foldl (\(acc,acc') p -> let (b,n) = boundP names p in (b ++ acc, n++acc')) ([],[]) ps
+        boundP names (PListContains _ e) = ([], getDepExp e names)
+        boundP names (PLiteral _ _) = ([],[])
+        boundP names (PApplication _ _ p) = boundP names p
 
 divideDecls :: [Declaration] -> ([Either (Identifier, Type) Type], [Assumption], [Assumption], [ValueDeclaration])
 divideDecls ds = divide ds ([],[],[],[])
@@ -205,12 +319,12 @@ divideDecls ds = divide ds ([],[],[],[])
                 EmptyTypeParam -> 
                     case typeOfTD td [] of
                         Right t -> Right $ TAlias id t
-                        Left (id, t) -> Left (id, TAlias id t)
+                        Left (idd, t) -> Left (idd, TAlias id t)
                 TypeParam tids -> 
                     let ids = map (\(TypeIdentifier id) -> id) tids in
                     case typeOfTD td ids of
                         Right t -> Right $ TConstr ids $ TAlias id t
-                        Left (id, t) -> Left (id, TConstr ids $ TAlias id t)
+                        Left (idd, t) -> Left (idd, TConstr ids $ TAlias id t)
         typeOfTD :: TypeDefinition -> [Identifier] -> Either (Identifier, Type) Type
         typeOfTD (TDAlias t) vars = Right $ applyVars vars t
         typeOfTD (TDRecord rfts) vars = Right $ applyVars vars $ TRecord rfts
@@ -258,17 +372,28 @@ posOfBindPattern (BFunctionDecl (Identifier _ pos) _) = pos
 valDeclToStore :: Store -> [ValueDeclaration] -> TI Store
 -- convert value declaration to a ProgramState.Value / Expression
 -- previously sorted vds should remove laziness from values
-valDeclToStore s vds = -- TODO implement
+valDeclToStore s vds =
     case vds of
         [Val pos bp e] ->
             case bp of
                 BFunctionDecl (Identifier id pos) params ->
                     return $ withRec id (makeLambda params (transExp e)) s s
+                BOp _ op params ->
+                    return $ withRec (opIdent op) (makeLambda params (transExp e)) s s
                 _ -> do
                     trace ("STATIC EVAL of "++show bp) return ()
-                    val <- lift $ eval (transExp e) (trace (show s) s)
+                    val <- lift $ eval (transExp e) s
                     bindValue val bp s
-        _ -> fail "TODO implement mutually recursive values"
+        vds -> 
+            let (s', ids) = foldl (\(s', ids) (Val _ bp e) ->
+                                case bp of
+                                    BFunctionDecl (Identifier id _) params ->
+                                        (withRec id (makeLambda params (transExp e)) s' s', id:ids)
+                                    BOp _ op params ->
+                                        (withRec (opIdent op) (makeLambda params (transExp e)) s' s', opIdent op : ids)
+                                    _ -> error "ERROR: Mutually recursive non-function values?"
+                    ) (s,[]) vds
+            in return $ fix (\f s'' -> updateRec ids (f s'') s') s'
 
 makeLambda [] e = e
 makeLambda (h:t) e = LambdaExpression (convParam h) (makeLambda t e)

@@ -38,7 +38,11 @@ tBool = TUnion (ident "Bool") [UDEnum (ident "True"), UDEnum (ident "False")]
 -- tList = TConstr [ident "a"] (TList baseLibPos (TVar $ ident "a"))
 -- tFun = TConstr [(ident "a"),(ident "b")] (TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "b"))
 
-tString = TAlias (ident "String") $ TList baseLibPos tChar
+tString = TAlias (ident "String") $ list tChar
+
+fun t1 t2 = TFunction baseLibPos t1 t2
+list t = TList baseLibPos t
+var x = TVar $ ident x
 
 baseLibTypes = [tUnit, tChar, tNum, tBool, tString]
 
@@ -125,14 +129,14 @@ merge s1 s2 = if agree then return (s1++s2) else fail "merge fails"
  where agree = all (\v -> apply s1 (TVar $ ident v) == apply s2 (TVar $ ident v))
                    (map fst s1 `intersect` map fst s2)
 
-mergeApply :: Monad m => SourcePos -> Substitution -> [(Type, Type)] -> m Substitution
+mergeApply :: SourcePos -> Substitution -> [(Type, Type)] -> TI Substitution
 mergeApply pos l [] = return l
 mergeApply pos l ((t, t'):ts) = do
     s <- mgu pos (apply l t) (apply l t')
     let l' = s @@ l
     mergeApply pos l' ts
 
-mgu :: Monad m => SourcePos -> Type -> Type -> m Substitution
+mgu :: SourcePos -> Type -> Type -> TI Substitution
 mgu pos (TAlias _ t) t' = mgu pos t t'
 mgu pos t (TAlias _ t') = mgu pos t t'
 
@@ -153,10 +157,11 @@ mgu pos (TUnion id uds) (TUnion id' uds') | id == id' = mergeApply pos nullSubst
 
 mgu pos (TRecord rfts) (TRecord rftsExpected) = do
     let pairsM = map (\(id, t) -> (id, t, lookup id $ map recFType rfts)) $ map recFType rftsExpected
-    trace (show pairsM ++ " of "++show rftsExpected ++ " -> "++show rfts) mapM_ (\(id, t, mb) -> case mb of
-                            Nothing -> posFail pos $ "Record doesn't have field `"++id++"`"
+    mapM_ (\(id, t, mb) -> case mb of
+                            Nothing -> posWarn pos $ "Record doesn't have field `"++id++"`"
                             _ -> return () ) pairsM
-    let pairs = map (\(id, t, Just t') -> (t,t')) pairsM
+    let pairsF = filter (\(id,t, tm) -> isJust tm) pairsM
+    let pairs = map (\(id, t, Just t') -> (t,t')) pairsF
     mergeApply pos nullSubst pairs
     where
         recFType (RecordFieldType (Identifier id _) t) = (id, t)
@@ -171,6 +176,18 @@ mgu pos (TNamed (Identifier i _)) (TApp _ (TNamed (Identifier i' _)) ts) | i == 
 mgu pos (TApp _ t ts) (TApp _ t' ts') = do
     s <- mgu pos t t'
     mergeApply pos s (zip ts ts')
+
+mgu pos t1 t2@(TNamed (Identifier i _)) =
+    clearViewedTypes $ do
+        t <- viewType t2 i
+        if t == t2 then posFail pos $ expected t2 actual t1 "Types do not unify"
+        else mgu pos t1 t
+
+mgu pos t1@(TNamed (Identifier i _)) t2 =
+    clearViewedTypes $ do
+        t <- viewType t1 i
+        if t == t1 then posFail pos $ expected t2 actual t1 "Types do not unify"
+        else mgu pos t t2
 
 mgu pos t1 t2 = posFail pos $ expected t2 actual t1 "Types do not unify"
 
@@ -202,9 +219,11 @@ findMaybe id ((i:>:t):as) | id == i = return t
 data InferenceState = InferenceState {
         subst_ :: Substitution,
         counter :: Int,
-        recordStack :: [Assumption]
+        recordStack :: [Assumption],
+        types_ :: [(Ident, Type)],
+        viewTypes_ :: [Ident]
     } deriving (Eq, Show)
-initialInferenceState = InferenceState {subst_ = nullSubst, counter = 0, recordStack = []}
+initialInferenceState = InferenceState {subst_ = nullSubst, counter = 0, recordStack = [], types_ = [], viewTypes_ = []}
 
 type TI = StateT InferenceState IO
 
@@ -238,12 +257,28 @@ clearSubst action = do
     put $ state { subst_ = s}
     return a
 
-exact :: SourcePos -> Type -> Type -> TI ()
-exact pos t1 t2 = do
-    st1 <- simplify t1
-    st2 <- simplify t2
-    if st1 == st2 then return () -- TODO change == to equiv
-    else posWarn pos (expected t2 actual t1 "Types do not match")
+-- exact :: SourcePos -> Type -> Type -> TI ()
+-- exact pos t1 t2 = do
+--     st1 <- simplify t1
+--     st2 <- simplify t2
+--     if st1 `equiv` st2 then return ()
+--     else posWarn pos (expected t2 actual t1 "Annotation doesn't match actual type")
+--     where
+--         equiv (TFunction _ t1 t2) (TFunction _ t1' t2') = t1 `equiv` t1' && t2 `equiv` t2'
+--         equiv (TTuple ts) (TTuple ts') = foldl (\prev (t,t') -> prev && t `equiv` t') True (zip ts ts')
+--         equiv (TList _ t) (TList _ t') = t `equiv` t'
+--         equiv (TUnit _) (TUnit _) = True
+--         equiv (TNamed (Identifier id _)) (TNamed (Identifier id' _)) = id == id'
+--         equiv (TVar (Identifier id _)) (TVar (Identifier id' _)) = id == id'
+--         equiv (TAlias _ t) (TAlias _ t') = t `equiv` t'
+--         equiv (TRecord rfts) (TRecord rfts') = foldl (\prev ((RecordFieldType _ t), (RecordFieldType _ t')) -> prev && t `equiv` t') True (zip rfts rfts')
+--         equiv (TParenthesis t) (TParenthesis t') = t `equiv` t'
+--         equiv (TUnion id ud) (TUnion id' ud') | id == id' = foldl inner True (zip ud ud')
+--             where
+--                 inner prev ((UDTyped _ t), (UDTyped _ t')) = prev && t `equiv` t'
+--                 inner prev _ = prev
+--         equiv (TApp _ t ts) (TApp _ t' ts') = all (\(t, t') -> t `equiv` t') (zip (t:ts) (t':ts'))
+--         equiv _ _ = False
 
 posWarn :: (MonadTrans f) => SourcePos -> String -> f IO ()
 posWarn pos msg = lift $ putStrLn ("WARNING\t"++show pos ++ "\n  "++msg)
@@ -286,6 +321,32 @@ isRecordType (TVar (Identifier id _)) = do
     state <- get
     return $ any (\(i:>:_) -> i == id) $ recordStack state
 
+setTypesDictionary :: [(Ident, Type)] -> TI ()
+setTypesDictionary ts = do
+    state <- get
+    put $ state {types_ = ts}
+
+types :: TI [(Ident, Type)]
+types = types_ <$> get
+
+viewType :: Type -> Ident -> TI Type
+viewType t id = do
+    ts <- types
+    state <- get
+    put $ state { viewTypes_ = id : viewTypes_ state }
+    case lookup id ts of
+        Nothing -> return t
+        Just tt -> return tt
+
+clearViewedTypes :: TI a -> TI a
+clearViewedTypes action = do
+    state <- get
+    let viewed = viewTypes_ state
+    r <- action
+    state' <- get
+    put $ state' {viewTypes_ = viewed}
+    return r 
+
 tiLit :: Literal -> TI Type
 tiLit (Char _) = return tChar
 tiLit (String _) = return tString
@@ -315,7 +376,7 @@ tiExp as (ETyped pos e t) = do
     t' <- tiExp as e
     ta <- anonimize pos t
     unify pos t' ta
-    return t'
+    return ta
 tiExp as (EApplication pos eapp es) = do
     stap <- tiExp as eapp >>= simplify >>= anonimize pos
     tes <- mapM (tiExp as) es
@@ -405,8 +466,27 @@ tiExp as (EMatch pos e alts) = do
     trace ("Unifying patterns") return ()
     foldM_ (\t1 t2 -> do unify pos t1 t2; return t2) t pt
     return $ head et
+tiExp as (ERecordUpdate pos id rfas) = do
+    t <- tiExp as (EVariable id)
+    case t of
+        TRecord rftsL -> do
+            rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
+            let tout = TRecord $ mergeRecs rftsL rftsR
+            unify pos tout t
+            return $ tout
+        TVar{} -> do
+            n <- newTVar pos
+            rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
+            mapM_ (\rft -> pushRecordField n $ TRecord [rft]) rftsR
+            return n
+        _ -> posFail pos "Cannot extend a non record value"
+    where
+        mergeRecs rs rs' = foldl (\acc r@(RecordFieldType id t) -> if contains rs id then acc else r:acc) rs rs'
+        contains ((RecordFieldType (Identifier id _) _):t) i@(Identifier id' _) =
+            id == id' || contains t i
+        contains [] _ = False
+
 -- TODO EListComprehension
--- TODO ERecordUpdate
 
 materializeRecords pos = mapM_ (\id -> do chk <- isRecordType id; if chk then do t <- popRecordField id; unify pos t id else return ())
 
@@ -471,7 +551,10 @@ tiPat as (PListContains pos e) = do
 tiPat as (PWildCard pos) = do
     n <- newTVar pos
     return (as, n, [])
-
+tiPat as (PRecord pos rps) = do
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') (RecordPattern _ _ p) -> do (ass, t, tvv) <- tiPat as'' p; return (ass, t:ts', tvv ++ tvs')) (as, [], []) rps
+    let t = TRecord $ map (\(t, RecordPattern _ id _) -> RecordFieldType id t) (zip (reverse ts) rps)
+    return $ (as', t, tvs)
     
 
 tiBPat :: BindPattern -> TI ([Assumption], [Assumption], Type, [Type])
@@ -485,12 +568,12 @@ tiBPat (BVariable (Identifier id pos)) = do
     n <- newTVar pos
     return ([id :>: n], [], n, [n])
 tiBPat (BList pos bps) = do
-    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, t:ts', tvv ++ tvs')) ([], [], []) bps
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass++as'', t:ts', tvv ++ tvs')) ([], [], []) bps
     foldM_ (\l r -> do unify pos l r; return r) (head ts) (tail ts)
     let tss = reverse ts
     return (as', [], TList pos $ head tss, tvs)
 tiBPat (BTuple pos bps) = do
-    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, t:ts', tvv ++ tvs')) ([], [], []) bps
+    (as', ts, tvs) <- foldM (\(as'', ts', tvs') bp -> do (ass, _, t, tvv) <- tiBPat bp; return (ass++as'', t:ts', tvv ++ tvs')) ([], [], []) bps
     return (as', [], TTuple $ reverse ts, tvs)
 tiBPat (BListHead pos bphead bptail) = do
     (ash, _, th, tvh) <- tiBPat bphead
@@ -598,55 +681,32 @@ tiValDecls annotations as ds = do
                             Nothing -> return ()
                             Just t' -> do
                                 let p = baseLibPos --TODO posOfType t'
+                                --exact p t t'
                                 unify p t t'
-                                exact p t t') as''
+                                ) das
     das' <- applySubst das
     return das'
 
-testValDecl = [
-    Val baseLibPos (BVariable $ ident "x") 
-        (ENegative baseLibPos $ EVariable (ident "y")),
-    Val baseLibPos (BVariable $ ident "y") (ELiteral baseLibPos $ Integer 1),
-    Val baseLibPos (BVariable $ ident "z") 
-        (EOp baseLibPos (EVariable $ ident "x") (Op "+") (EVariable $ ident "y")),
-    Val baseLibPos (BVariable $ ident "h") 
-        (EApplication baseLibPos (EVariable $ ident "f") [ELiteral baseLibPos $ Char 'a', ELiteral baseLibPos $ Integer 1, ELiteral baseLibPos $ String "str"]),
-    -- Val (ident "mid") 
-    --     (EApplication baseLibPos (EVariable (ident "id")) [EVariable (ident "id")]),
-    Val baseLibPos (BVariable $ ident "one") 
-        (EApplication baseLibPos (EVariable (ident "id")) [ELiteral baseLibPos $ Integer 1])
-    -- Val baseLibPos (BVariable $ ident "loop")
-    --     (ELambda baseLibPos [Parameter $ ident "l"] 
-    --         (EApplication baseLibPos
-    --             (EVariable $ ident "l")
-    --             [EVariable $ ident "l"]))
-    -- Val baseLibPos (BVariable $ ident "loopRun")
-    --     (EApplication baseLibPos
-    --         (EVariable $ ident "loop")
-    --         [EVariable $ ident "loop"])
-    ]
-
-testAddOp = "(+)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum)
-testFunction = "f" :>: TFunction baseLibPos tChar (TFunction baseLibPos tNum (TFunction baseLibPos tString tNum))
-testId = "id" :>: TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "a")
-ignore = "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit
-
-boolVal = ["True" :>: tBool, "False" :>: tBool]
-
 baseLibAssumptions = [
-    "(+)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(-)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(*)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(/)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(**)" :>: TFunction baseLibPos tNum (TFunction baseLibPos tNum tNum),
-    "(&&)" :>: TFunction baseLibPos tBool (TFunction baseLibPos tBool tBool),
-    "(||)" :>: TFunction baseLibPos tBool (TFunction baseLibPos tBool tBool),
-    "(==)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
-    "(<=)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
-    "(>=)" :>: TFunction baseLibPos (TVar $ ident "a") (TFunction baseLibPos (TVar $ ident "a") tBool),
-    "(++)" :>: TFunction baseLibPos (TList baseLibPos $ TVar $ ident "a") (TFunction baseLibPos (TList baseLibPos $ TVar $ ident "a") (TList baseLibPos $ TVar $ ident "a")),
-    "id" :>: TFunction baseLibPos (TVar $ ident "a") (TVar $ ident "a"),
-    "ignore" :>: TFunction baseLibPos (TVar $ ident "a") tUnit,
-    "print" :>: TFunction baseLibPos (TVar $ ident "a") tUnit,
-    "True" :>: tBool, "False" :>: tBool
+    "(+)" :>: fun tNum (fun tNum tNum),
+    "(-)" :>: fun tNum (fun tNum tNum),
+    "(*)" :>: fun tNum (fun tNum tNum),
+    "(/)" :>: fun tNum (fun tNum tNum),
+    "(**)" :>: fun tNum (fun tNum tNum),
+    "(&&)" :>: fun tBool (fun tBool tBool),
+    "(||)" :>: fun tBool (fun tBool tBool),
+    "(==)" :>: fun (var "a") (fun (var "a") tBool),
+    "(<=)" :>: fun (var "a") (fun (var "a") tBool),
+    "(>=)" :>: fun (var "a") (fun (var "a") tBool),
+    "(++)" :>: fun (list $ var "a") (fun (list $ var "a") (list $ var "a")),
+    "id" :>: fun (var "a") (var "a"),
+    "ignore" :>: fun (var "a") tUnit,
+    "print" :>: fun (var "a") tUnit,
+    "True" :>: tBool, "False" :>: tBool,
+    "die" :>: fun tString (var "a"),
+    "head" :>: fun (list (var "a")) (var "a"),
+    "tail" :>: fun (list (var "a")) (list (var "a")),
+    "(!!)" :>: fun (list (var "a")) (fun tNum (var "a")),
+    "toString" :>: fun (var "a") tString,
+    "map" :>: fun (fun (var "a") (var "b")) (fun (list (var "a")) (list (var "b")))
  ]
