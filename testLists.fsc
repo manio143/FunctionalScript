@@ -1,0 +1,19 @@
+let l = [1,2,3]
+let l2 = [1..5]
+
+let p = [(x,y) | x <- [1..10], y <- [3..5]]
+
+@map2 :: (a -> b) -> [a] -> [b]
+let map2 f l = [f(x) | x <- l]
+
+let p2 = [(x,xx,xxx) | x <- l, xx <- map2(square, l), xxx <- map2(cube, l)]
+
+let square = \x -> x*x
+let cube = \x -> x**3
+
+let main args =
+    do printStr("p:")
+    do print(p)
+    do printStr("\np2:")
+    do print(p2)
+    0

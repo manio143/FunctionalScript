@@ -1,0 +1,51 @@
+data MonadState<a, s> = State of (s -> (a * s))
+
+type RandomState = { seed :: Number }
+
+let r_multiplier = 1103515245
+let r_addin = 12345
+let r_modulus = 2**31 - 1
+let nextRandom seed = (r_multiplier * seed + r_addin) % r_modulus
+
+type RandomMonad<a> = MonadState<a, RandomState>
+
+let return x = State(\s -> (x,s))
+@bind :: RandomMonad<a> -> (a -> RandomMonad<b>) -> RandomMonad<b>
+let bind m k =
+    match m with
+    | State(f) -> 
+        let cont s =
+            let (a, ss) = f(s)
+            runState(k(a), ss)
+        State(cont)
+let get = State(\s -> (s,s))
+let put s = State(\_ -> ((),s))
+let bindDo m k = bind(m, (\_ -> k))
+
+let runState m s =
+    match m with
+    | State(f) -> f(s)
+let evalState m s = let (a,s) = runState(m,s) in a
+
+let (>>=) = bind
+let (>>) = bindDo
+
+@rand :: RandomMonad
+let rand = 
+    let nextNum rst =
+        match rst with
+        | { seed = s } -> return(nextRandom(s))
+    let update s =
+        put({ seed = s}) >>= (\_ -> return(s))
+    get >>= nextNum >>= update
+
+let main args =
+    do printStr("Provide random seed: ")
+    let seed = toNum(readln(()))
+    do printStr("Here are 10 random numbers:")
+    let nextRandom = rand >>= (\n -> return(print(n)))
+    let repeat n =
+        if n == 0 then return(())
+        else nextRandom >> repeat(n-1)
+    let _ = evalState(repeat(10), {seed = seed})
+    0

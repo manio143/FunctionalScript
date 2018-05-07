@@ -1,0 +1,49 @@
+type Person = { Name :: String; Age :: Number; Hair :: Color}
+
+data Color = Black | Brown | Blond | Blue | Green
+
+type SuperHero extends Person with { Alias :: String }
+
+@person :: String -> Number -> Color -> Person
+let person name age hair = { Name = name; Age = age; Hair = hair}
+
+@superHero :: String -> Number -> String -> SuperHero
+let superHero name age alias =
+    if head(alias) == 'S' then let p = person(name, age, Blue) in {p with Alias = alias}
+    else let p = person(name, age, Black) in {p with Alias = alias}
+
+@ourGroup :: [Person]
+let ourGroup = [
+    person("Tom", 42, Brown),
+    person("Hank", 18, Blond),
+//downcast SuperHero to Person
+    superHero("John", 25, "Sitter") :: Person,
+    superHero("Jack", 30, "Warbler") :: Person
+]
+
+@personToString :: Person -> String
+let personToString p =
+    match p with
+    | { Name = n; Age = a} -> let age = toString(a) in n ++ " " ++ age
+
+@f :: a -> {A :: Number}
+let f x = {x with A = 2}
+
+@f2 :: {A :: Number; B :: a} -> {A :: Number; B :: a}
+let f2 x = do ignore((x.A, x.B)) in {x with A = 2}
+
+@combine :: (b -> c) -> (a -> b) -> (a -> c)
+let combine l r = \x -> l(r(x))
+let (<<) = combine
+
+let iter f l = ignore(map(ignore << f, l))
+
+@space :: String -> String
+let space s = "  "++s
+
+let main args =
+    do printStr("Our group of people:")
+    do iter(printStr, map(space << personToString, ourGroup))
+    do printStr("But who are they actually?")
+    do iter(print, ourGroup)
+    0

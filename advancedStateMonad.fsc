@@ -1,0 +1,62 @@
+data Result<e, a> =
+    | Just of a
+    | Error of e
+
+data MonadState<a, e, s> = State of (s -> (Result<e,a> * s))
+
+let stateFun m =
+    match m with
+    | State(f) -> f
+
+let return x = State(\s -> (Just(x),s))
+
+@bind :: MonadState<a,e,s> -> (a -> MonadState<b,e,s>) -> MonadState<b,e,s>
+let bind m k =
+    let cont s =
+        let (a, ss) = runState(m, s)
+        match a with
+        | Just(x) -> runState(k(x), ss)
+        | Error(e) -> (Error(e), ss)
+    State(cont)
+
+let fail e = State(\s -> (Error(e), s))
+
+let get = State(\s -> (Just(s),s))
+let put s = State(\_ -> (Just(()),s))
+let bindDo m k = bind(m, (\_ -> k))
+
+let runState m s = stateFun(m)(s)
+let evalState m s = let (a,ss) = runState(m,s) in a
+let evalOnlyState m s = let (a,ss) = runState(m,s) in ss
+
+let (>>=) = bind
+let (>>) = bindDo
+
+let null = return(())
+
+let fold f acc l =
+    match l with
+    | (h:t) -> fold(f, (f(acc, h)), t)
+    | [] -> acc
+
+let main args =
+    let sum x = get >>= (\s -> return(s+x)) >>= put
+    let sums = fold(\prev x -> prev >> sum(x), null, [1..10])
+    do printStr("Suma [1..10] od zera:")
+    do print(evalOnlyState(sums,0))
+    do printStr("Suma [1..10] od 8:")
+    do print(evalOnlyState(sums,8))
+
+    do printStr("")
+
+    let divide x =
+            let div s =
+                if x == 0 then fail("Division by zero") 
+                else return(s/x)
+            get >>= div >>= put
+    let division = fold(\prev x -> prev >> divide(x), null)
+    do printStr("Podzielenie 8 przez [2,2,2]:")
+    do print(evalOnlyState(division([2,2,2]), 8))
+    do printStr("Podzielenie 8 przez [2,0,2] (+stan w momencie błędu):")
+    do print(runState(division([2,0,2]), 8))
+    0

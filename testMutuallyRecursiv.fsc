@@ -1,0 +1,10 @@
+let isZero n = n == 0
+
+let even num = if isZero(num) then True else odd(num-1)
+let odd num = if isZero(num) then False else even(num-1)
+
+let (***) a b = ((a+1) * a) * b
+
+let main args =
+    do print(even(12 *** 2))
+    0
