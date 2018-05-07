@@ -5,6 +5,10 @@ let odd num = if isZero(num) then False else even(num-1)
 
 let (***) a b = ((a+1) * a) * b
 
+let id x = x
+
+let foo x = id(id)(x)
+
 let main args =
-    do print(even(12 *** 2))
+    do print(foo(even)(12 *** 2))
     0

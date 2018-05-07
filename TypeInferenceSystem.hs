@@ -123,6 +123,19 @@ instance Types a => Types [a] where
     apply s = map (apply s)
     typeVariables = nub . concat . map typeVariables
 
+posOfType (TFunction p _ _) = p
+posOfType (TTuple (t:ts)) = posOfType t
+posOfType (TList p _) = p
+posOfType (TUnit p) = p
+posOfType (TNamed (Identifier _ p)) = p
+posOfType (TAlias (Identifier _ p) _) = p
+posOfType (TRecord ((RecordFieldType (Identifier _ p) _):rs)) = p
+posOfType (TParenthesis t) = posOfType t
+posOfType (TUnion (Identifier _ p) _) = p
+posOfType (TVar (Identifier _ p)) = p
+posOfType (TConstr _ t) = posOfType t
+posOfType (TApp p _ _) = p
+
 -- Most general unifier
 infixr 4 @@
 (@@) :: Substitution -> Substitution -> Substitution
@@ -146,8 +159,8 @@ mgu pos t (TAlias _ t') = mgu pos t t'
 
 mgu pos (TFunction _ t1 t2) (TFunction _ t1' t2') =
     mergeApply pos nullSubst $ zip [t1,t2] [t1', t2']
-mgu pos (TTuple ts) (TTuple ts') =
-    if length ts' > length ts then posFail pos "Tuple with not enough elements" else
+mgu pos t1@(TTuple ts) t2@(TTuple ts') =
+    if length ts' > length ts then posFail pos $ expected t2 actual t1 "Tuple with not enough elements" else
     mergeApply pos nullSubst (zip ts ts')
 
 mgu pos (TList _ t) (TList _ t') = mgu pos t t'
@@ -266,34 +279,12 @@ clearSubst action = do
     put $ state { subst_ = s}
     return a
 
--- exact :: SourcePos -> Type -> Type -> TI ()
--- exact pos t1 t2 = do
---     st1 <- simplify t1
---     st2 <- simplify t2
---     if st1 `equiv` st2 then return ()
---     else posWarn pos (expected t2 actual t1 "Annotation doesn't match actual type")
---     where
---         equiv (TFunction _ t1 t2) (TFunction _ t1' t2') = t1 `equiv` t1' && t2 `equiv` t2'
---         equiv (TTuple ts) (TTuple ts') = foldl (\prev (t,t') -> prev && t `equiv` t') True (zip ts ts')
---         equiv (TList _ t) (TList _ t') = t `equiv` t'
---         equiv (TUnit _) (TUnit _) = True
---         equiv (TNamed (Identifier id _)) (TNamed (Identifier id' _)) = id == id'
---         equiv (TVar (Identifier id _)) (TVar (Identifier id' _)) = id == id'
---         equiv (TAlias _ t) (TAlias _ t') = t `equiv` t'
---         equiv (TRecord rfts) (TRecord rfts') = foldl (\prev ((RecordFieldType _ t), (RecordFieldType _ t')) -> prev && t `equiv` t') True (zip rfts rfts')
---         equiv (TParenthesis t) (TParenthesis t') = t `equiv` t'
---         equiv (TUnion id ud) (TUnion id' ud') | id == id' = foldl inner True (zip ud ud')
---             where
---                 inner prev ((UDTyped _ t), (UDTyped _ t')) = prev && t `equiv` t'
---                 inner prev _ = prev
---         equiv (TApp _ t ts) (TApp _ t' ts') = all (\(t, t') -> t `equiv` t') (zip (t:ts) (t':ts'))
---         equiv _ _ = False
-
 posWarn :: (MonadTrans f) => SourcePos -> String -> f IO ()
 posWarn pos msg = lift $ putStrLn ("WARNING\t"++show pos ++ "\n  "++msg)
 
-expected :: Type -> a -> Type -> String -> String
-expected tex _ tact msg = msg ++ "\n\tExpected: "++show tex++"\n\tActual:   "++show tact
+expected :: (Show t) => t -> a -> t -> String -> String
+expected tex _ tact msg = msg ++ "\n   Expected: "++show tex++"\n   Actual:   "++show tact
+
 actual :: ()
 actual = ()
 
@@ -375,7 +366,10 @@ tiLit UnitValue = return tUnit
 tiExp :: [Assumption] -> Expression -> TI Type
 tiExp as (EVariable id@(Identifier iid pos)) = do
     t <- find id as -- >>= anonimize pos
-    trace ("lookup \""++iid++"\" of "++show t) return t
+    trace ("lookup \""++iid++"\" of "++show t) return ()
+    case t of
+        TVar{} -> return t
+        _ -> anonimize pos t
 tiExp as (ELiteral pos lit) = tiLit lit
 tiExp as (EParenthesis e) = tiExp as e
 tiExp as (ENegative pos e) = do
@@ -383,13 +377,6 @@ tiExp as (ENegative pos e) = do
     unify pos t tNum
     return t
 tiExp as (EOp pos el op er) = tiExp as (EApplication pos (EVariable $ opId op pos) [el, er])
-    -- tl <- tiExp as el
-    -- tr <- tiExp as er
-    -- top <- find (opId op pos) as
-    -- simtop <- simplify top
-    -- argsBasedType <- funOf pos [tl,tr] >>= simplify
-    -- unify pos argsBasedType simtop
-    -- return $ funResult simtop 2
 tiExp as (ETyped pos e t) = do
     t' <- tiExp as e
     ta <- anonimize pos t
@@ -398,12 +385,12 @@ tiExp as (ETyped pos e t) = do
 tiExp as (EApplication pos eapp es) = do
     stap <- tiExp as eapp >>= simplify >>= anonimize pos
     tes <- mapM (tiExp as) es
-    argsBasedType <- funOf pos tes >>= simplify -- >>= anonimize pos
+    argsBasedType <- funOf pos tes >>= simplify
     unify pos (trace (show argsBasedType) argsBasedType) (trace (show stap) stap)
     astap <- applySubst stap
     return $ funResult astap (length es)
 tiExp as (ERecordField pos e id) = do
-    t <- tiExp as e >>= simplify -- >>= anonimize pos
+    t <- tiExp as e >>= simplify
     case t of
         TRecord rfts -> do
             trace ("Field "++show id++" of record "++show t) return ()
@@ -444,12 +431,12 @@ tiExp as (EList pos es) =
         _ -> do
                 ts <- mapM (tiExp as) es
                 foldM_ (\l r -> do unify pos l r; return r) (head ts) (tail ts)
-                simplify (TList pos $ head ts) -- >>= anonimize pos
+                simplify (TList pos $ head ts)
 tiExp as (EIf pos eb et ef) = do
     tb <- tiExp as eb >>= simplify
     unify pos tb tBool
-    tt <- tiExp as et >>= simplify -- >>= anonimize pos
-    tf <- tiExp as ef >>= simplify -- >>= anonimize pos
+    tt <- tiExp as et >>= simplify
+    tf <- tiExp as ef >>= simplify
     unify pos tt tf
     return tt
 tiExp as (EIfDo pos eb edo econt) = do
@@ -457,7 +444,7 @@ tiExp as (EIfDo pos eb edo econt) = do
     unify pos tb tBool
     td <- tiExp as edo >>= simplify
     unify pos td tUnit
-    tiExp as econt >>= simplify -- >>= anonimize pos
+    tiExp as econt >>= simplify
 tiExp as (ELambda pos ps e) = do
     as' <- foldM (\as_ p -> case p of
                                 Parameter (Identifier i pos') -> do
@@ -705,21 +692,11 @@ tiValDecls annotations as ds = do
                             ass' <- applySubst ass
                             asG' <- applySubst asG
                             return (ass', asG' ++ das)) (as', []) etts
-    -- ts <- mapM (\(Val (Identifier _ pos) _) -> newTVar pos) ds
-    -- let ids = map (\(Val (Identifier id _) _) -> id) ds
-    --     idPos = map (\(Val (Identifier id pos) _) -> (id, pos)) ds
-    --     as' = zipWith (:>:) ids ts ++ anonAs
-    --     exps = map (\(Val _ e) -> e) ds
-    -- zipWithM_ (tiUnifyExp as') (zip exps ts) (map snd idPos)
-    -- s <- subst
-    -- let ts' = apply s ts
-    --     as'' = zipWith (:>:) ids ts'
     trace "Checking annotations" return ()
     mapM_ (\(id :>: t) -> case findMaybe id annotations of
                             Nothing -> return ()
                             Just t' -> do
-                                let p = baseLibPos --TODO posOfType t'
-                                --exact p t t'
+                                let p = posOfType t'
                                 t'' <- anonimize p t'
                                 unify p t t''
                                 ) das

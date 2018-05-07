@@ -60,20 +60,23 @@ checkTypes :: (Monad m) => [Either (Identifier, Type) Type] -> [Assumption] -> [
 -- ?? make sure you cannot do a cyclic dependency in an alias or a record
 -- DONE change lowerletter TNamed to TVar
 -- check for type redefinition
-checkTypes types annotations assumptions valDecls = do -- TODO above
+checkTypes types annotations constructors valDecls = do -- TODO above
         let typeNames = namesOfTypes (map eitherUT types) []
         types' <- mergeLefts types (zip typeNames (map eitherUT types))
-        assumptions' <- checkAss typeNames assumptions
+        constructors' <- checkAss typeNames constructors
+        constructors'' <- assertConstrNames constructors'
         annotations' <- checkAss typeNames annotations
         valDecls' <- checkVals typeNames valDecls
         types'' <- mapM (checkType typeNames) types'
-        return (types'', annotations', assumptions', valDecls')
+        return (types'', annotations', constructors'', valDecls')
     where
         namesOfTypes [] acc = reverse acc
         namesOfTypes (h:t) acc = namesOfTypes t (nameT h : acc)
 
         eitherUT (Right t) = t
         eitherUT (Left (_, t)) = t
+
+        assertConstrNames = mapM (\(id :>: t) -> if isLower $ head id then posFail (posOfType t) "Constructor must start with an upper letter" else return (id :>: t))
 
         --TODO mergeLefts should fold to allow extending extended types
         mergeLefts ts idts = mapM (mergeLeft idts) ts
@@ -182,7 +185,7 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
         checkType names (TConstr ids t) = do
             t' <- checkType names t
             let tvs = typeVariables t'
-            mapM_ (\tv -> if not $ any (\(Identifier id _) -> id == tv) ids then fail $ "Type variable `"++tv++"` not present in type constructor" else return ()) tvs --TODO add pos of type to fail
+            mapM_ (\tv -> if not $ any (\(Identifier id _) -> id == tv) ids then posFail (posOfType t) $ "Type variable `"++tv++"` not present in type constructor" else return ()) tvs
             return $ TConstr ids t'
         checkType names (TApp pos t ts) = do
             t' <- checkType names t
