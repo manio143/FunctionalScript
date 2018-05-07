@@ -39,9 +39,6 @@ interpret file args = do
             let ast = parseFile file contents
             case ast of
                 Right program -> do
-                    -- print program
-                    -- putStrLn ""
                     store <- translate program
-                    print store
                     runProgram store args
                 Left err -> print err

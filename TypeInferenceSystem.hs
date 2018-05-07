@@ -175,7 +175,7 @@ mgu pos (TUnion id uds) (TUnion id' uds') | id == id' = mergeApply pos nullSubst
 mgu pos (TRecord rfts) (TRecord rftsExpected) = do
     let pairsM = map (\(id, t) -> (id, t, lookup id $ map recFType rfts)) $ map recFType rftsExpected
     mapM_ (\(id, t, mb) -> case mb of
-                            Nothing -> posWarn pos $ "Record doesn't have field `"++id++"`"
+                            Nothing -> posFail pos $ "Record doesn't have field `"++id++"`"
                             _ -> return () ) pairsM
     let pairsF = filter (\(id,t, tm) -> isJust tm) pairsM
     let pairs = map (\(id, t, Just t') -> (t,t')) pairsF
@@ -183,11 +183,14 @@ mgu pos (TRecord rfts) (TRecord rftsExpected) = do
     where
         recFType (RecordFieldType (Identifier id _) t) = (id, t)
 
-mgu pos (TUnit _) (TUnit _) = return nullSubst
-mgu pos (TNamed (Identifier i _)) (TNamed (Identifier i' _)) | i == i' = return nullSubst
+mgu pos t1@(TRecord rfts) t2@(TVar id) = pushRecordField t2 t1 >> return nullSubst
+mgu pos t1@(TVar id) t2@(TRecord rfts) = pushRecordField t1 t2 >> return nullSubst
 
 mgu pos (TVar (Identifier u _)) t = varBind pos u t
 mgu pos t (TVar (Identifier u _)) = varBind pos u t
+
+mgu pos (TUnit _) (TUnit _) = return nullSubst
+mgu pos (TNamed (Identifier i _)) (TNamed (Identifier i' _)) | i == i' = return nullSubst
 
 mgu pos (TNamed (Identifier i _)) (TApp _ (TNamed (Identifier i' _)) ts) | i == i' = return nullSubst
 mgu pos (TApp _ t ts) (TApp _ t' ts') = do
@@ -263,7 +266,6 @@ unify pos t1 t2 = do
     s <- subst
     t1' <- simplify t1
     t2' <- simplify t2
-    trace ("Unify actual "++show (apply s t1')++" with expected "++show (apply s t2')) return ()
     u <- mgu pos (apply s t1') (apply s t2')
     extSubst u
 
@@ -291,7 +293,7 @@ actual = ()
 applySubst :: Types t => t -> TI t
 applySubst t = do
     s <- subst
-    return $ apply s t {-trace ("APPLY "++show s)-} 
+    return $ apply s t
 
 pushRecordField :: Type -> Type -> TI ()
 pushRecordField (TVar (Identifier id _)) fieldType = do
@@ -302,7 +304,6 @@ popRecordField :: Type -> TI Type
 popRecordField (TVar (Identifier id pos)) = do
     state <- get
     let fieldTypes = filter (\(i:>:_) -> i == id) $ recordStack state
-    trace ("Pop record of "++show fieldTypes) return ()
     put $ state { recordStack = recordStack state \\ fieldTypes}
     if null fieldTypes then posFail pos "Cannot create a record from empty list"
     else makeRfts pos fieldTypes [] >>= return . TRecord
@@ -314,6 +315,7 @@ popRecordField (TVar (Identifier id pos)) = do
                     Just t' -> do
                         unify pos' t t'
                         makeRfts pos ts acc
+        makeRfts pos ((id :>: TRecord rfts):ts) acc = makeRfts pos ((map (\rft -> id :>: TRecord [rft]) rfts)++ts) acc
         makeRfts pos [] acc = return $ map (\(i,t) -> RecordFieldType (Identifier i pos) t) acc
 
 isRecordType :: Type -> TI Bool
@@ -344,17 +346,28 @@ viewType t id = do
                 case tt of
                     TUnion{} -> return t
                     TConstr _ (TUnion{}) -> return t
-                    _ -> return (trace (show tt) tt)
+                    _ -> return tt
 
 clearViewedTypes :: TI a -> TI a
 clearViewedTypes action = do
     state <- get
     let viewed = viewTypes_ state
     r <- action
-    trace "Clear viewed types" return ()
     state' <- get
     put $ state' {viewTypes_ = viewed}
     return r 
+
+view :: Type -> (Type -> TI Type) -> TI Type
+view t f =
+    case t of
+        TNamed (Identifier id _) ->
+            clearViewedTypes $ do
+                t' <- viewType t id
+                if t == t' then f t
+                else case t' of
+                        TAlias _ tt -> f tt
+                        _ -> f t'
+        _ -> f t 
 
 tiLit :: Literal -> TI Type
 tiLit (Char _) = return tChar
@@ -365,8 +378,7 @@ tiLit UnitValue = return tUnit
 
 tiExp :: [Assumption] -> Expression -> TI Type
 tiExp as (EVariable id@(Identifier iid pos)) = do
-    t <- find id as -- >>= anonimize pos
-    trace ("lookup \""++iid++"\" of "++show t) return ()
+    t <- find id as
     case t of
         TVar{} -> return t
         _ -> anonimize pos t
@@ -386,35 +398,33 @@ tiExp as (EApplication pos eapp es) = do
     stap <- tiExp as eapp >>= simplify >>= anonimize pos
     tes <- mapM (tiExp as) es
     argsBasedType <- funOf pos tes >>= simplify
-    unify pos (trace (show argsBasedType) argsBasedType) (trace (show stap) stap)
+    unify pos argsBasedType stap
     astap <- applySubst stap
     return $ funResult astap (length es)
 tiExp as (ERecordField pos e id) = do
-    t <- tiExp as e >>= simplify
-    case t of
-        TRecord rfts -> do
-            trace ("Field "++show id++" of record "++show t) return ()
-            case recField rfts id of
-                    Just t' -> return t'
-                    Nothing -> 
-                        case id of
-                            Identifier idd _ -> posFail pos $ "Record has no field `"++idd++"`"
-        TVar{} -> do
-            rt <- newTVar pos
-            pushRecordField t (TRecord [RecordFieldType id rt])
-            return rt
-        _ -> posFail pos "Not a record type"
+    tt <- tiExp as e >>= simplify
+    view tt $ \t ->
+        case t of
+            TRecord rfts -> do
+                case recField rfts id of
+                        Just t' -> return t'
+                        Nothing -> 
+                            case id of
+                                Identifier idd _ -> posFail pos $ "Record has no field `"++idd++"`"
+            TVar{} -> do
+                rt <- newTVar pos
+                pushRecordField t (TRecord [RecordFieldType id rt])
+                return rt
+            _ -> posFail pos "Not a record type"
     where 
         recField [] _ = Nothing
         recField ((RecordFieldType (Identifier id pos) t):rfts) iid@(Identifier id' _) | id == id' = Just t
                             | otherwise = recField rfts iid
 tiExp as (ELet pos bp elet econt) = do
-    trace "ELet  --------" return ()
     (asG, asL, t, tvs) <- tiBPat bp
     t' <- tiExp (asG ++ asL ++ as) elet
     unify pos t' t
     materializeRecords pos tvs
-    trace "ELet end -----" return ()
     as'' <- applySubst (asG ++ as)
     tiExp as'' econt
 tiExp as (EDo pos edo econt) = do
@@ -468,23 +478,24 @@ tiExp as (EMatch pos e alts) = do
     t <- tiExp as e
     (pt, et) <- foldM (\(pt', et') alt -> do (ptt, ett) <- tiAlt as alt; return (ptt:pt', ett:et')) ([],[]) alts
     foldM_ (\t1 t2 -> do unify pos t1 t2; return t2) (head et) (tail et)
-    trace ("Unifying patterns") return ()
-    foldM_ (\t1 t2 -> do unify pos t1 t2; return t2) t pt
+    mapM_ (\t' -> do unify pos t t') pt
+    materializeRecords pos [t]
     return $ head et
 tiExp as (ERecordUpdate pos id rfas) = do
-    t <- tiExp as (EVariable id)
-    case t of
-        TRecord rftsL -> do
-            rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
-            let tout = TRecord $ mergeRecs rftsL rftsR
-            unify pos tout t
-            return $ tout
-        TVar{} -> do
-            n <- newTVar pos
-            rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
-            mapM_ (\rft -> pushRecordField n $ TRecord [rft]) rftsR
-            return n
-        _ -> posFail pos "Cannot extend a non record value"
+    tt <- tiExp as (EVariable id)
+    view tt $ \t ->
+        case t of
+            TRecord rftsL -> do
+                rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
+                let tout = TRecord $ mergeRecs rftsL rftsR
+                unify pos tout t
+                return $ tout
+            TVar{} -> do
+                n <- newTVar pos
+                rftsR <- mapM (\(RecordFieldAssignment pos' id e) -> do t <- tiExp as e; return $ RecordFieldType id t) rfas
+                mapM_ (\rft -> pushRecordField n $ TRecord [rft]) rftsR
+                return n
+            _ -> posFail pos $ "Cannot extend a non record value\n   Actual: " ++ show t
     where
         mergeRecs rs rs' = foldl (\acc r@(RecordFieldType id t) -> if contains rs id then acc else r:acc) rs rs'
         contains ((RecordFieldType (Identifier id _) _):t) i@(Identifier id' _) =
@@ -620,7 +631,6 @@ tiBPat (BFunctionDecl (Identifier id pos) ps) = do
                                 _ -> return as_) [] ps
     t <- newTVar pos
     argT <- mapM (parType ((id:>:fn):as')) ps
-    trace ("Bind Function `"++id++"` of "++show (makeFun pos argT t)) return ()
     unify pos fn $ makeFun pos argT t
     return ([id :>: fn], as', t, argT)
 
@@ -631,7 +641,7 @@ anonimize pos t = do
     -- mapM_ (\id -> newTVar pos >>= \n -> unify pos n (TVar $ ident id)) tv
     -- applySubst t
     ["" :>: t'] <- deepAnonimize ["" :>: t]
-    trace ("Anonimize <<"++show t++">>  {{"++show t'++"}}") return t'
+    return t'
 
 deepAnonimize :: [Assumption] -> TI [Assumption]
 deepAnonimize = mapM anonA
@@ -684,15 +694,12 @@ tiValDecls annotations as ds = do
     anonAs <- deepAnonimize as
     (as', etts) <- foldM prepValDecl (anonAs,[]) ds
     (as'', das) <- foldM (\(ass, das) (asG, asL, e, t, tvs, p) -> do
-                            trace "ELet  --------" return ()
                             t' <- tiExp (asL++ass) e
                             unify p t' t
                             materializeRecords p tvs
-                            trace "ELet End -----" return ()
                             ass' <- applySubst ass
                             asG' <- applySubst asG
                             return (ass', asG' ++ das)) (as', []) etts
-    trace "Checking annotations" return ()
     mapM_ (\(id :>: t) -> case findMaybe id annotations of
                             Nothing -> return ()
                             Just t' -> do

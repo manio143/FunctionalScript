@@ -183,7 +183,7 @@ intOfNumber (Float f) = round f
 
 
 eval :: Expression -> Store ->  IO Value
-eval (ValueExpression val) _ = {-trace ("eval Value of "++show val)-} return val
+eval (ValueExpression val) _ = return val
 eval (NegativeExpression e) s = eval e s >>= neg
     where
         neg (NumberValue (Int i)) = return (NumberValue (Int (-i)))
@@ -195,11 +195,11 @@ eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
     case  getVar id s of
         Just val -> 
-            {-trace ("eval "++id++" - "++ show val) $-} return val
+            return val
         Nothing -> 
-            case {-trace ("eval recursive "++id)-} getRec id s of
+            case getRec id s of
                 Just (e, s') -> eval e (withRec id e s' s')
-                Nothing -> trace (show s) errorT ("Variable `"++id++"` is not bound")
+                Nothing -> errorT ("Variable `"++id++"` is not bound")
 eval (ListConstruction eli) s = unpack [] $ map (\e -> eval e s) eli
         where
             unpack acc (h:t) = do

@@ -33,13 +33,8 @@ translate (Program decls) = evalStateT inner initialInferenceState
         inner = do
         let (types, annotations, assumptions, valDecls) = divideDecls decls
         (types', annotations', assumptions', valDecls') <- checkTypes (types ++ map Right baseLibTypes) annotations assumptions valDecls
-        lift $ print types'
-        lift $ print annotations'
-        lift $ print assumptions'
         let valDs = divideDependant valDecls'
-        lift $ print valDs
         as <- typecheck valDs (mainAnn : annotations') assumptions' types'
-        lift $ print as
         let st = constructorStore assumptions baseLibStore
         foldM valDeclToStore st valDs
 
@@ -386,7 +381,6 @@ valDeclToStore s vds =
                 BOp _ op params ->
                     return $ withRec (opIdent op) (makeLambda params (transExp e)) s s
                 _ -> do
-                    trace ("STATIC EVAL of "++show bp) return ()
                     val <- lift $ eval (transExp e) s
                     bindValue val bp s
         vds -> 
