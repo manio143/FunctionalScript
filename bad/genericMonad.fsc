@@ -1,0 +1,24 @@
+//Generic monad
+
+//doesn't work!!!
+
+type Monad<a> = {   //Type variable `b` not present in type constructor
+    return :: b -> Monad<b>
+;   bind :: Monad<a> -> (a -> Monad<b>) -> Monad<b>
+;   fail :: String -> Monad<a>
+;   result :: a
+}
+
+@ bind_ :: Monad<a> -> (a -> Monad<b>) -> Monad<b>
+let bind_ m k = m.bind(m,k)
+let (>>=) = bind_
+
+//---
+
+data Result<a> = Success of a | Error of String
+
+let resultMonad = {
+    return = \x -> { resultMonad with result = Success(x) } //can't unify `a` with `Result b`
+;   bind = \m k -> k(m.result)
+;   fail = \s -> resultMonad
+}
