@@ -28,8 +28,8 @@ let main args =
         match t with
         | Leaf -> []
         | Node((tl, x, tr)) -> infix(tl) ++ [x] ++ infix(tr)
-    do print("sorting...")
-    do print("adding one to each...")
+    do printStr("sorting...")
+    do printStr("adding one to each...")
     let sortedIncreased = infix(plusOne(fold(flip(insert), Leaf, numbers)))
     do print(sortedIncreased)
     0

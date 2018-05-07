@@ -62,13 +62,17 @@ except es [] = []
 
 posFail pos msg = fail $ show pos ++ "\n" ++ msg
 
-simplify :: Monad m => Type -> m Type
+simplify :: Type -> TI Type
 simplify (TApp pos (TConstr ids tc) ts) | length ids == length ts = do
                                             t <- simplify tc
                                             tss <- mapM simplify ts
                                             return $ zip (uids ids) tss `apply` t
                                         | otherwise = posFail pos "Incorrect number of type parameters"
-simplify tt@(TApp _ t@(TNamed{}) _) = return tt
+simplify tt@(TApp pos t@(TNamed (Identifier i _)) ps) =
+    clearViewedTypes $ do
+        t' <- viewType t i
+        if t' == t then return tt
+        else simplify $ TApp pos t' ps
 simplify (TApp pos t@(TAlias{}) ts) = do t' <- simplify t; simplify (TApp pos t' ts)
 simplify t@(TApp pos _ _) = posFail pos $ "Not a type constructor: "++show t
 simplify (TConstr ids tc) = return . TConstr ids =<< simplify tc
@@ -189,6 +193,9 @@ mgu pos t1@(TNamed (Identifier i _)) t2 =
         if t == t1 then posFail pos $ expected t2 actual t1 "Types do not unify"
         else mgu pos t t2
 
+mgu pos (TConstr _ t) t2 = mgu pos t t2
+mgu pos t1 (TConstr _ t) = mgu pos t1 t
+
 mgu pos t1 t2 = posFail pos $ expected t2 actual t1 "Types do not unify"
 
 varBind :: Monad m => SourcePos -> Ident -> Type -> m Substitution
@@ -241,8 +248,10 @@ newTVar pos = do
 unify :: SourcePos -> Type -> Type -> TI ()
 unify pos t1 t2 = do 
     s <- subst
-    trace ("Unify actual "++show (apply s t1)++" with expected "++show (apply s t2)) return ()
-    u <- mgu pos (apply s t1) (apply s t2)
+    t1' <- simplify t1
+    t2' <- simplify t2
+    trace ("Unify actual "++show (apply s t1')++" with expected "++show (apply s t2')) return ()
+    u <- mgu pos (apply s t1') (apply s t2')
     extSubst u
 
 extSubst s' = do
@@ -320,6 +329,7 @@ isRecordType :: Type -> TI Bool
 isRecordType (TVar (Identifier id _)) = do
     state <- get
     return $ any (\(i:>:_) -> i == id) $ recordStack state
+isRecordType _ = return False
 
 setTypesDictionary :: [(Ident, Type)] -> TI ()
 setTypesDictionary ts = do
@@ -331,18 +341,26 @@ types = types_ <$> get
 
 viewType :: Type -> Ident -> TI Type
 viewType t id = do
+    return ()
     ts <- types
     state <- get
-    put $ state { viewTypes_ = id : viewTypes_ state }
-    case lookup id ts of
-        Nothing -> return t
-        Just tt -> return tt
+    if elem id $ viewTypes_ state then return t
+    else do
+        put $ state { viewTypes_ = id : viewTypes_ state }
+        case lookup id ts of
+            Nothing -> return t
+            Just tt -> 
+                case tt of
+                    TUnion{} -> return t
+                    TConstr _ (TUnion{}) -> return t
+                    _ -> return (trace (show tt) tt)
 
 clearViewedTypes :: TI a -> TI a
 clearViewedTypes action = do
     state <- get
     let viewed = viewTypes_ state
     r <- action
+    trace "Clear viewed types" return ()
     state' <- get
     put $ state' {viewTypes_ = viewed}
     return r 
@@ -364,14 +382,14 @@ tiExp as (ENegative pos e) = do
     t <- tiExp as e
     unify pos t tNum
     return t
-tiExp as (EOp pos el op er) = do
-    tl <- tiExp as el
-    tr <- tiExp as er
-    top <- find (opId op pos) as
-    simtop <- simplify top
-    argsBasedType <- funOf pos [tl,tr] >>= simplify
-    unify pos argsBasedType simtop
-    return $ funResult simtop 2
+tiExp as (EOp pos el op er) = tiExp as (EApplication pos (EVariable $ opId op pos) [el, er])
+    -- tl <- tiExp as el
+    -- tr <- tiExp as er
+    -- top <- find (opId op pos) as
+    -- simtop <- simplify top
+    -- argsBasedType <- funOf pos [tl,tr] >>= simplify
+    -- unify pos argsBasedType simtop
+    -- return $ funResult simtop 2
 tiExp as (ETyped pos e t) = do
     t' <- tiExp as e
     ta <- anonimize pos t
@@ -486,7 +504,10 @@ tiExp as (ERecordUpdate pos id rfas) = do
             id == id' || contains t i
         contains [] _ = False
 
--- TODO EListComprehension
+tiExp as (EListComprehension pos e comps) = do
+    as' <- tiComps as comps
+    t <- tiExp as' e
+    return $ TList pos t
 
 materializeRecords pos = mapM_ (\id -> do chk <- isRecordType id; if chk then do t <- popRecordField id; unify pos t id else return ())
 
@@ -498,6 +519,23 @@ parType as (WildCard pos) = newTVar pos
 makeFun :: SourcePos -> [Type] -> Type -> Type
 makeFun pos [] t = t
 makeFun pos (h:t') t = TFunction pos h $ makeFun pos t' t
+
+tiComps as comps = foldM (\as' c -> tiComp as' c) as comps
+tiComp as (Comprehension pos bp exp) = do
+    (asG, asL, t, tvs) <- tiBPat bp
+    t' <- tiExp (asG ++ asL ++ as) exp
+    case t' of
+        TList _ t'' -> do
+            unify pos t'' t
+            materializeRecords pos tvs
+            applySubst (asG ++ as)
+        TVar{} -> do
+            n <- newTVar pos
+            unify pos t' (TList pos n)
+            materializeRecords pos tvs
+            applySubst (asG ++ as)
+        _ -> posFail pos "Expression in the comprehension must be a list"
+
 
 tiAlt :: [Assumption] -> Alternate -> TI (Type, Type)
 tiAlt as (Alternate pos pat e) = do
@@ -682,7 +720,8 @@ tiValDecls annotations as ds = do
                             Just t' -> do
                                 let p = baseLibPos --TODO posOfType t'
                                 --exact p t t'
-                                unify p t t'
+                                t'' <- anonimize p t'
+                                unify p t t''
                                 ) das
     das' <- applySubst das
     return das'
@@ -693,20 +732,32 @@ baseLibAssumptions = [
     "(*)" :>: fun tNum (fun tNum tNum),
     "(/)" :>: fun tNum (fun tNum tNum),
     "(**)" :>: fun tNum (fun tNum tNum),
+    "(%)" :>: fun tNum (fun tNum tNum),
     "(&&)" :>: fun tBool (fun tBool tBool),
     "(||)" :>: fun tBool (fun tBool tBool),
     "(==)" :>: fun (var "a") (fun (var "a") tBool),
     "(<=)" :>: fun (var "a") (fun (var "a") tBool),
     "(>=)" :>: fun (var "a") (fun (var "a") tBool),
     "(++)" :>: fun (list $ var "a") (fun (list $ var "a") (list $ var "a")),
+    "(:)" :>: fun (var "a") (fun (list $ var "a") (list $ var "a")),
     "id" :>: fun (var "a") (var "a"),
     "ignore" :>: fun (var "a") tUnit,
     "print" :>: fun (var "a") tUnit,
+    "printStr" :>: fun tString tUnit,
     "True" :>: tBool, "False" :>: tBool,
     "die" :>: fun tString (var "a"),
     "head" :>: fun (list (var "a")) (var "a"),
     "tail" :>: fun (list (var "a")) (list (var "a")),
     "(!!)" :>: fun (list (var "a")) (fun tNum (var "a")),
     "toString" :>: fun (var "a") tString,
-    "map" :>: fun (fun (var "a") (var "b")) (fun (list (var "a")) (list (var "b")))
+    "toNum" :>: fun tString tNum,
+    "readln" :>: fun tUnit tString,
+    "map" :>: fun (fun (var "a") (var "b")) (fun (list (var "a")) (list (var "b"))),
+    "flatten" :>: fun (list $ list $ var "a") (list $ var "a"),
+    
+    -- INTERNAL DEBUG RELATED FUNCTIONS
+    "__dump_store" :>: fun tUnit tUnit
  ]
+
+mainAnn = "main" :>: fun (list tString) tNum
+ 

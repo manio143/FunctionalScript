@@ -4,6 +4,7 @@ module ProgramState where
 import System.IO
 import System.Exit
 import Debug.Trace
+import Text.Read
 
 import Data.List
 import Control.Monad.Trans.Maybe
@@ -44,6 +45,7 @@ data Function =
     Func Store Parameter Expression 
     | Constr Ident
     | BuiltIn (Value -> IO Value)
+    | Special Ident
 
 instance Eq Function where
     Func s p e == Func s' p' e' = s == s' && p == p' && e == e'
@@ -193,9 +195,9 @@ eval (DoExpression ed eo) s = eval ed s >> eval eo s
 eval (VariableExpression id) s =
     case  getVar id s of
         Just val -> 
-            trace ("eval "++id++" - "++ show val) $ return val
+            {-trace ("eval "++id++" - "++ show val) $-} return val
         Nothing -> 
-            case trace ("eval recursive "++id)getRec id s of
+            case {-trace ("eval recursive "++id)-} getRec id s of
                 Just (e, s') -> eval e (withRec id e s' s')
                 Nothing -> trace (show s) errorT ("Variable `"++id++"` is not bound")
 eval (ListConstruction eli) s = unpack [] $ map (\e -> eval e s) eli
@@ -263,6 +265,8 @@ eval (ApplicationExpression ef ev) s = do
         FunctionValue (Func s' _ exp) -> eval exp s'
         FunctionValue (BuiltIn f) -> f val
         FunctionValue (Constr id) -> return $ UnionValue (id, UnionWithValue val)
+        FunctionValue (Special id) -> case id of
+                                        "__dump_store" -> dumpStore s
 
 withVar :: Ident -> Value -> Store -> Store
 withVar id v = insertTree id (Right v)
@@ -294,6 +298,7 @@ minus = builtInOp $ numCast (-) (-)
 times = builtInOp $ numCast (*) (*)
 power = builtInOp $ floatCast (**)
 divide = builtInOp $ floatCast (/)
+modulus = builtInOp $ intCast mod
 
 numCast :: (Double->Double->Double) -> (Integer->Integer->Integer) -> Value -> Value -> Value
 numCast df iff v1 v2 = let v = case (v1, v2) of
@@ -309,7 +314,13 @@ floatCast df v1 v2 = let v = case (v1, v2) of
                                 (NumberValue (Float d), NumberValue (Int i)) -> Float $ df d (fromInteger i)
                                 (NumberValue (Float e), NumberValue (Float d)) -> Float $ df e d
                         in NumberValue v
-
+intCast :: (Integer->Integer->Integer) -> Value -> Value -> Value
+intCast df v1 v2 = let v = case (v1, v2) of
+                                (NumberValue (Int i), NumberValue (Int j)) -> Int $ df i j
+                                (NumberValue (Int i), NumberValue (Float d)) -> Int $ df i (round d)
+                                (NumberValue (Float d), NumberValue (Int i)) -> Int $ df (round d) i
+                                (NumberValue (Float e), NumberValue (Float d)) -> Int $ df (round e) (round d)
+                        in NumberValue v
 operatorSet :: [(Ident, Value)]
 operatorSet = [
                 ("(+)", plus),
@@ -317,15 +328,18 @@ operatorSet = [
                 ("(*)", times),
                 ("(/)", divide),
                 ("(**)", power),
+                ("(%)", modulus),
                 ("(&&)", logicalAnd),
                 ("(||)", logicalOr),
                 ("(==)", equals),
                 ("(<=)", lessEqThan),
                 ("(>=)", greaterEqThan),
                 ("(++)", concatenate),
+                ("(:)", append),
                 ("id", identityFunction),
                 ("ignore", ignoreFunction),
                 ("print", printFunction),
+                ("printStr", printStrFunction),
                 ("True", true),
                 ("False", false),
                 ("__list_sequence", listSeq),
@@ -334,11 +348,18 @@ operatorSet = [
                 ("tail", listTail),
                 ("(!!)", arrNth),
                 ("toString", toStr),
-                ("map", mapFunction)
+                ("toNum", toNum),
+                ("readln", readLine),
+                ("map", mapFunction),
+                ("__map", mapFunction),
+                ("flatten", flatFunction),
+                ("__dump_store", FunctionValue $ Special "__dump_store")
         ]
 
 equals :: Value
 equals = builtInOp $ \a b -> if a == b then true else false
+
+append = builtInOp $ \a (ListValue l) -> ListValue (a:l)
 
 lessEqThan = builtInOp inner
     where
@@ -370,8 +391,23 @@ arrNth = builtInOp inner
 toStr = FunctionValue $ BuiltIn $ \a -> return $ stringListToValue $ show a
 
 identityFunction = FunctionValue $ BuiltIn (\a -> return a)
+
 ignoreFunction = FunctionValue $ BuiltIn (\a -> return UnitValue)
+
 printFunction = FunctionValue $ BuiltIn (\a -> print a >> return UnitValue)
+printStrFunction = FunctionValue $ BuiltIn (\a -> putStrLn (stringListFromValue a) >> return UnitValue)
+
+toNum = FunctionValue $ BuiltIn 
+    $ \s -> let str = stringListFromValue s in
+                case readMaybe str :: Maybe Integer of
+                    Just ii -> return $ NumberValue $ Int ii
+                    Nothing -> 
+                        case readMaybe str :: Maybe Double of
+                            Just ff -> return $ NumberValue $ Float ff
+                            Nothing -> errorT "String doesn't represent a number"
+
+readLine = FunctionValue $ BuiltIn
+    $ \_ -> getLine >>= return . stringListToValue
 
 mapFunction =  FunctionValue $
                     BuiltIn (\a -> return $ FunctionValue $
@@ -382,6 +418,14 @@ mapFunction =  FunctionValue $
                                         (ValueExpression f)
                                         (ValueExpression v)) Leaf) l
                 return $ ListValue l'
+
+flatFunction = FunctionValue $ BuiltIn
+    $ \(ListValue l) -> 
+        case l of
+            [] -> return $ ListValue []
+            (ListValue{}:ls) -> return $ ListValue $ concat $ map (\(ListValue lv) -> lv) l
+            _ -> return $ ListValue l
+        
 
 concatenate = builtInOp inner
     where
@@ -395,6 +439,14 @@ true = UnionValue $ ("True", UnionEnum)
 false = UnionValue $ ("False", UnionEnum)
 
 baseLibStore = foldl (\acc (i, f) -> withVar i f acc) Leaf operatorSet
+
+dumpStore :: Store -> IO Value
+dumpStore s = do
+    mapM_ (\v -> print v) $ inf s
+    return UnitValue
+    where
+        inf Leaf = []
+        inf (Node tl v tr) = inf tl ++ [v] ++ inf tr
 
 recTest = 
     LetExpression "f" 

@@ -75,7 +75,7 @@ module AST where
     show (TList _ t) = "[" ++ show t ++ "]"
     show (TUnit _) = "()"
     show (TNamed (Identifier id _)) = "$"++id --TODO remove $ sign
-    show (TAlias (Identifier id _) _) = id
+    show (TAlias (Identifier id _) t) = "~"++id++"("++show t++")"
     show (TRecord rfts) = "{" ++ intercalate "; " (map show rfts) ++ "}"
     show (TParenthesis t) = "("++ show t ++ ")"
     show (TUnion (Identifier id _) uds) = id ++ "{{"++intercalate "|" (map show uds)++"}}"

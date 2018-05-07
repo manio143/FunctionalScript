@@ -1,4 +1,3 @@
---{-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
 module Translator where
 
 import AST
@@ -39,7 +38,7 @@ translate (Program decls) = evalStateT inner initialInferenceState
         lift $ print assumptions'
         let valDs = divideDependant valDecls'
         lift $ print valDs
-        as <- typecheck valDs annotations' assumptions' types'
+        as <- typecheck valDs (mainAnn : annotations') assumptions' types'
         lift $ print as
         let st = constructorStore assumptions baseLibStore
         foldM valDeclToStore st valDs
@@ -68,7 +67,7 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
         annotations' <- checkAss typeNames annotations
         valDecls' <- checkVals typeNames valDecls
         types'' <- mapM (checkType typeNames) types'
-        return (types', annotations', assumptions', valDecls')
+        return (types'', annotations', assumptions', valDecls')
     where
         namesOfTypes [] acc = reverse acc
         namesOfTypes (h:t) acc = namesOfTypes t (nameT h : acc)
@@ -100,8 +99,10 @@ checkTypes types annotations assumptions valDecls = do -- TODO above
             t' <- checkType names t
             return (id :>: t')
         
-        checkVals names vds = mapM (checkVal names) vds
-        checkVal names (Val pos bp e) = checkExp names e >>= return . Val pos bp
+        checkVals names vds = mapM (checkVal names (foldl (\acc (Val _ bp _) -> namesB bp ++ acc) [] vds)) vds
+        checkVal names valNames (Val pos bp e) = do
+            mapM_ (\n -> if elem n (valNames \\ namesB bp) then posFail pos $ "Redefinition of value `"++n++"`" else return ()) (namesB bp)
+            checkExp names e >>= return . Val pos bp
         checkExp names (EOp pos e1 op e2) = do
             e1' <- checkExp names e1
             e2' <- checkExp names e2
@@ -215,6 +216,7 @@ topoSort svds = foldl makePrecede [] dependants
                                             Just i  -> uncurry(++) $ first(++deps) $ splitAt i ts
                                             _       -> ts ++ deps ++ [svd]
 
+namesB :: BindPattern -> [AST.Ident]
 namesB (BParenthesis bp) = namesB bp
 namesB (BOp _ op _) = [opIdent op]
 namesB (BWildCard _) = []
@@ -228,13 +230,13 @@ namesB (BTuple _ bps) = foldl (\acc bp -> namesB bp ++ acc) [] bps
 divideDependant :: [ValueDeclaration] -> [[ValueDeclaration]]
 -- group mutually recursive declarations 
 -- sort based on dependency
-divideDependant vds = 
+divideDependant vds =
     let d = map getDependencies (reverse vds)
     in sortTopo d
     where
         sortTopo d = 
             let sorted = topoSort d in 
-            trace (show sorted) map (\l -> map (\(SVD vd _) -> vd) l) $ group sorted []
+            map (\l -> map (\(SVD vd _) -> vd) l) $ group sorted []
         group [] acc = reverse acc
         group (h:t) ta = let mut = h : filter (\h' -> compareSVD h h' == PEQ) t in group (t \\ mut) (mut:ta)
 
@@ -435,12 +437,14 @@ transExp (EListComprehension pos e comps) =
         compF (ep, i) (Comprehension _ bp ec) =
             let id = "__x"++show i in
             (ApplicationExpression
+                (VariableExpression "flatten")
                 (ApplicationExpression
-                    (VariableExpression "map")
-                    (LambdaExpression 
-                        (BoundParameter id)
-                        (makeLet bp (VariableExpression id) ep)))
-                (transExp ec)
+                    (ApplicationExpression
+                        (VariableExpression "__map")
+                        (LambdaExpression 
+                            (BoundParameter id)
+                            (makeLet bp (VariableExpression id) ep)))
+                    (transExp ec))
              , i+1)
 transExp (ERecord _ rfas) = 
     RecordConstruction 
