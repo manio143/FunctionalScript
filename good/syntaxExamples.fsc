@@ -74,9 +74,9 @@ type IntTree = Tree<Number>
 type Person = {Name :: String; Age :: Number}
 type Teacher extends Person with {Pupils :: [Person]}
 
-//@combine :: F<a,b,c>
+@combine :: F<a,b,c>
 //jeśli wszystkie argumenty typu są generyczne to można je pominąć
-@combine :: F
+//@combine :: F
 let combine f g = \x -> g(f(x))
 let (>>) = combine
 let (<<) f g = combine(g, f)
@@ -92,10 +92,15 @@ let Susan = {Bob with Name = "Susan"}
 let BobInWork = {Bob with Pupils = [Susan]}
 
 // odwołanie się do pola
-@getName :: Person -> String
+//@getName :: Person -> String
 let getName p = p.Name
 
-@getFirstPupil :: Teacher -> Person
+// @ pup :: Teacher -> [Person]
+// let pup t = t.Pupils
+
+let head_ = head
+
+//@getFirstPupil :: Teacher -> Person
 let getFirstPupil t = head <| t.Pupils
 
 let typeTest () =

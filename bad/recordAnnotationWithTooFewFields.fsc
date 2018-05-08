@@ -1,0 +1,11 @@
+let length h =
+    match h with
+    | (hh:t) -> 1 + length(t)
+    | [] -> 0
+
+@ p :: {A :: String} -> Number
+let p x = length(x.A) + x.B
+
+let main _ =
+    do print(p({A = "asdfghjk"}))
+    0

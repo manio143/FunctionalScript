@@ -153,6 +153,12 @@ mergeApply pos l ((t, t'):ts) = do
     let l' = s @@ l
     mergeApply pos l' ts
 
+expectedFail :: SourcePos -> Type -> Type -> String -> TI Substitution
+expectedFail pos tex tact msg = do
+    c <- reverseExpected
+    if c then posFail pos $ expected tact actual tex msg
+    else posFail pos $ expected tex actual tact msg
+
 mgu :: SourcePos -> Type -> Type -> TI Substitution
 mgu pos (TAlias _ t) t' = mgu pos t t'
 mgu pos t (TAlias _ t') = mgu pos t t'
@@ -160,7 +166,7 @@ mgu pos t (TAlias _ t') = mgu pos t t'
 mgu pos (TFunction _ t1 t2) (TFunction _ t1' t2') =
     mergeApply pos nullSubst $ zip [t1,t2] [t1', t2']
 mgu pos t1@(TTuple ts) t2@(TTuple ts') =
-    if length ts' > length ts then posFail pos $ expected t2 actual t1 "Tuple with not enough elements" else
+    if length ts' > length ts then expectedFail pos t2 t1 "Tuple with not enough elements" else
     mergeApply pos nullSubst (zip ts ts')
 
 mgu pos (TList _ t) (TList _ t') = mgu pos t t'
@@ -178,7 +184,7 @@ mgu pos (TRecord rfts) (TRecord rftsExpected) = do
                             Nothing -> posFail pos $ "Record doesn't have field `"++id++"`"
                             _ -> return () ) pairsM
     let pairsF = filter (\(id,t, tm) -> isJust tm) pairsM
-    let pairs = map (\(id, t, Just t') -> (t,t')) pairsF
+    let pairs = map (\(id, t, Just t') -> (t',t)) pairsF
     mergeApply pos nullSubst pairs
     where
         recFType (RecordFieldType (Identifier id _) t) = (id, t)
@@ -200,19 +206,19 @@ mgu pos (TApp _ t ts) (TApp _ t' ts') = do
 mgu pos t1 t2@(TNamed (Identifier i _)) =
     clearViewedTypes $ do
         t <- viewType t2 i
-        if t == t2 then posFail pos $ expected t2 actual t1 "Types do not unify"
+        if t == t2 then expectedFail pos t2 t1 "Types do not unify"
         else mgu pos t1 t
 
 mgu pos t1@(TNamed (Identifier i _)) t2 =
     clearViewedTypes $ do
         t <- viewType t1 i
-        if t == t1 then posFail pos $ expected t2 actual t1 "Types do not unify"
+        if t == t1 then expectedFail pos t2 t1 "Types do not unify"
         else mgu pos t t2
 
 mgu pos (TConstr _ t) t2 = mgu pos t t2
 mgu pos t1 (TConstr _ t) = mgu pos t1 t
 
-mgu pos t1 t2 = posFail pos $ expected t2 actual t1 "Types do not unify"
+mgu pos t1 t2 = expectedFail pos t2 t1 "Types do not unify"
 
 varBind :: Monad m => SourcePos -> Ident -> Type -> m Substitution
 varBind pos u t | (case t of
@@ -244,9 +250,10 @@ data InferenceState = InferenceState {
         counter :: Int,
         recordStack :: [Assumption],
         types_ :: [(Ident, Type)],
-        viewTypes_ :: [Ident]
+        viewTypes_ :: [Ident],
+        reverseExpected_ :: Bool
     } deriving (Eq, Show)
-initialInferenceState = InferenceState {subst_ = nullSubst, counter = 0, recordStack = [], types_ = [], viewTypes_ = []}
+initialInferenceState = InferenceState {subst_ = nullSubst, counter = 0, recordStack = [], types_ = [], viewTypes_ = [], reverseExpected_ = False}
 
 type TI = StateT InferenceState IO
 
@@ -261,18 +268,35 @@ newTVar pos = do
     put $ state { counter = n + 1}
     return t
 
+reverseExpected = reverseExpected_ <$> get
+
+setAnnotationCheck = do
+    state <- get
+    put $ state {reverseExpected_ = True}
+
+setValCheck = do
+    state <- get
+    put $ state {reverseExpected_ = False}
+
 unify :: SourcePos -> Type -> Type -> TI ()
 unify pos t1 t2 = do 
     s <- subst
     t1' <- simplify t1
     t2' <- simplify t2
+    --trace ("UNIFY  "++show (apply s t1')++" WITH "++show (apply s t2')) return ()
     u <- mgu pos (apply s t1') (apply s t2')
     extSubst u
+
 
 extSubst s' = do
     state <- get
     s <- subst
     put $ state { subst_ = s' @@ s }
+
+unifyRec pos trec (TVar (Identifier id _)) = do
+    s <- subst
+    u <- varBind pos id (apply s trec)
+    extSubst u
 
 clearSubst action = do
     s <- subst
@@ -507,7 +531,7 @@ tiExp as (EListComprehension pos e comps) = do
     t <- tiExp as' e
     return $ TList pos t
 
-materializeRecords pos = mapM_ (\id -> do chk <- isRecordType id; if chk then do t <- popRecordField id; unify pos t id else return ())
+materializeRecords pos = mapM_ (\id -> do chk <- isRecordType id; if chk then do t <- popRecordField id; unifyRec pos t id else return ())
 
 parType :: [Assumption] -> Param -> TI Type
 parType as (Parameter id) = find id as
@@ -546,8 +570,9 @@ tiPat :: [Assumption] -> Pattern -> TI ([Assumption], Type, [Type])
 tiPat as (PParenthesis p) = tiPat as p
 tiPat as (PVariable i@(Identifier id pos)) =
     let v = findMaybe id as in
-    if isJust v && isUpper (head id) then
-        return (as, fromJust v, [])
+    if isJust v && isUpper (head id) then do
+        t <- anonimize pos $ fromJust v
+        return (as, t, [])
     else do
         n <- newTVar pos
         return ((id:>:n):as, n, [n])
@@ -647,9 +672,9 @@ deepAnonimize :: [Assumption] -> TI [Assumption]
 deepAnonimize = mapM anonA
     where
         anonA (id :>: t) = clearSubst $ do 
-            t' <- simplify t
-            t'' <- anonT t'
-            return $ id :>: t''
+                t' <- simplify t
+                t'' <- anonT t'
+                return $ id :>: t''
         anonT a@(TVar (Identifier id pos)) = do
             s <- subst
             case lookup id s of
@@ -691,8 +716,9 @@ prepValDecl (as, etts) (Val pos bp e) = do
 
 tiValDecls :: [Assumption] -> [Assumption] -> [ValueDeclaration] -> TI [Assumption]
 tiValDecls annotations as ds = do
-    anonAs <- deepAnonimize as
-    (as', etts) <- foldM prepValDecl (anonAs,[]) ds
+    setValCheck
+    --anonAs <- deepAnonimize as
+    (as', etts) <- foldM prepValDecl (as,[]) ds
     (as'', das) <- foldM (\(ass, das) (asG, asL, e, t, tvs, p) -> do
                             t' <- tiExp (asL++ass) e
                             unify p t' t
@@ -700,12 +726,14 @@ tiValDecls annotations as ds = do
                             ass' <- applySubst ass
                             asG' <- applySubst asG
                             return (ass', asG' ++ das)) (as', []) etts
+    setAnnotationCheck
     mapM_ (\(id :>: t) -> case findMaybe id annotations of
                             Nothing -> return ()
                             Just t' -> do
                                 let p = posOfType t'
-                                t'' <- anonimize p t'
-                                unify p t t''
+                                let p' = if p == baseLibPos then posOfType t else p
+                                t'' <- simplify t' >>= anonimize p'
+                                unify p' t'' t
                                 ) das
     das' <- applySubst das
     return das'

@@ -1,0 +1,4 @@
+//data T = E | E //Redefinition of a constructor name
+data T = E
+
+let E = 10

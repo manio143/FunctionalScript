@@ -50,18 +50,20 @@ nameT x = case x of
     TConstr _ t -> nameT t
 
 checkTypes :: (Monad m) => [Either (Identifier, Type) Type] -> [Assumption] -> [Assumption] -> [ValueDeclaration] -> m ([Type], [Assumption], [Assumption], [ValueDeclaration])
--- make sure that for each tvar in angles there is a TVar in body,
+-- DONE make sure that for each tvar in angles there is a TVar in body,
 -- DONE make sure no undefined name is used
--- ?? make sure you cannot do a cyclic dependency in an alias or a record
 -- DONE change lowerletter TNamed to TVar
 -- check for type redefinition
 checkTypes types annotations constructors valDecls = do -- TODO above
-        let typeNames = namesOfTypes (map eitherUT types) []
-        types' <- mergeLefts types (zip typeNames (map eitherUT types))
+        let typesSorted = map (\(TVD t _ _) -> t) $ topoSort (map (\t -> TVD t (nameT $ eitherUT t) (eitherUi t ++ (namesT $ eitherUT t))) types)
+        let typeNames = namesOfTypes (map eitherUT typesSorted) []
+        let duplicates = filter (\n -> elem n $ typeNames \\ [n]) typeNames
+        mapM_ (\n -> fail $ "Redefinition of type `"++n++"`") duplicates
+        types' <- mergeLefts typesSorted (zip typeNames (map eitherUT typesSorted))
         constructors' <- checkAss typeNames constructors
         constructors'' <- assertConstrNames constructors'
         annotations' <- checkAss typeNames annotations
-        valDecls' <- checkVals typeNames valDecls
+        valDecls' <- checkVals typeNames valDecls constructors''
         types'' <- mapM (checkType typeNames) types'
         return (types'', annotations', constructors'', valDecls')
     where
@@ -70,20 +72,33 @@ checkTypes types annotations constructors valDecls = do -- TODO above
 
         eitherUT (Right t) = t
         eitherUT (Left (_, t)) = t
+        eitherUi (Right _) = []
+        eitherUi (Left (Identifier i _, _)) = [i]
 
-        assertConstrNames = mapM (\(id :>: t) -> if isLower $ head id then posFail (posOfType t) "Constructor must start with an upper letter" else return (id :>: t))
+        assertConstrNames as = mapM inner as
+            where
+                inner (id :>: t) = do
+                    if isLower $ head id then posFail (posOfType t) "Constructor must start with an upper letter" else return ()
+                    if elem id (map (\(i:>:_)->i) as \\ [id]) then posFail (posOfType t) "Redefinition of a constructor name" else return ()
+                    return (id :>: t)
 
-        --TODO mergeLefts should fold to allow extending extended types
-        mergeLefts ts idts = mapM (mergeLeft idts) ts
-        mergeLeft idts (Right t) = return t
+        mergeLefts ts idts = do
+            (_,ts'') <- foldM (\(idts', ts') t -> do (idts'', t') <- mergeLeft idts' t; return (idts'', t':ts')) (idts,[]) ts
+            return ts''
+        mergeLeft idts (Right t) = return (idts, t)
         mergeLeft idts (Left ((Identifier id pos), t)) =
             case lookup id idts of
                 Nothing -> posFail pos $ "No such type `"++id++"`"
-                Just (TAlias _ (TRecord rfts)) -> 
+                Just t'@(TAlias _ (TRecord rfts)) -> 
                     case t of
-                        TAlias i (TRecord rftsN) -> return . TAlias i . TRecord =<< mergeRec rfts rftsN
-                        TConstr ids (TAlias i (TRecord rftsN)) -> return . TConstr ids . TAlias i . TRecord =<< mergeRec rfts rftsN
-                Just (TConstr{}) -> posFail pos "Cannot extend generic records"
+                        TAlias i@(Identifier ii _) (TRecord rftsN) -> do
+                            nt <- return . TAlias i . TRecord =<< mergeRec rfts rftsN
+                            return ( (ii, nt) : idts, nt)
+                        TConstr ids (TAlias i@(Identifier ii _) (TRecord rftsN)) -> do
+                            nt <- return . TConstr ids . TAlias i . TRecord =<< mergeRec rfts rftsN
+                            return ( (ii, nt) : idts, nt)
+                Just (TConstr{}) -> posFail pos "Cannot extend generic record types"
+                _ -> posFail pos "Cannot extend a non-record type"
 
         mergeRec rfts rftsN = do
             mapM_ (\(RecordFieldType id@(Identifier _ pos) t) -> if elemRec id rfts then posFail pos $ "Redefintion of record fields is not allowed ("++show id++")" else return ()) rftsN
@@ -97,7 +112,7 @@ checkTypes types annotations constructors valDecls = do -- TODO above
             t' <- checkType names t
             return (id :>: t')
         
-        checkVals names vds = mapM (checkVal names (foldl (\acc (Val _ bp _) -> namesB bp ++ acc) [] vds)) vds
+        checkVals names vds constrs = mapM (checkVal names (foldl (\acc (Val _ bp _) -> namesB bp ++ acc) [] vds ++ map (\(i:>:_)->i) constrs)) vds
         checkVal names valNames (Val pos bp e) = do
             mapM_ (\n -> if elem n (valNames \\ namesB bp) then posFail pos $ "Redefinition of value `"++n++"`" else return ()) (namesB bp)
             checkExp names e >>= return . Val pos bp
@@ -188,12 +203,17 @@ checkTypes types annotations constructors valDecls = do -- TODO above
             return $ TApp pos t' ts'
         checkType _ t = return t
 
+class (Eq a) => PartialOrd a where
+    compareP :: a -> a -> PartialOrdering
+
+data TVD = TVD (Either (Identifier, Type) Type) AST.Ident [AST.Ident] deriving (Eq, Show)
 
 data SVD = SVD ValueDeclaration [AST.Ident] deriving (Eq, Show)
 
 data PartialOrdering = PEQ | PLT | PGT | PN deriving (Eq, Show)
 
-compareSVD l r = if l `depends` r then
+instance PartialOrd SVD where
+    compareP l r = if l `depends` r then
                     if r `depends` l then PEQ else PGT
                 else if r `depends` l then PLT
                 else PN
@@ -201,13 +221,21 @@ compareSVD l r = if l `depends` r then
             names (Val _ bp _) = namesB bp
             depends (SVD vdl lids) (SVD vdr rids) = any (\n -> elem n rids) (names vdl)
 
-topoSort :: [SVD] -> [SVD]
+instance PartialOrd TVD where
+    compareP l r = if l `depends` r then
+                    if r `depends` l then PEQ else PGT
+                else if r `depends` l then PLT
+                else PN
+            where
+                depends (TVD _ _ lids) (TVD _ rid _) = elem rid lids
+
+
+topoSort :: (PartialOrd t) => [t] -> [t]
 topoSort svds = foldl makePrecede [] dependants
     where
-        dependants :: [(SVD, [SVD])]
         dependants = map (\svd -> 
             (svd, filter (\svd' -> 
-                            let c = compareSVD svd svd' in
+                            let c = compareP svd svd' in
                             c == PLT || c == PEQ) 
                         (svds \\ [svd]))) svds
         makePrecede ts (svd, deps) = nub $ case elemIndex svd ts of
@@ -225,6 +253,18 @@ namesB (BRecord _ rbps) = foldl (\acc (RecordBindPattern _ _ bp) -> namesB bp ++
 namesB (BList _ bps) = foldl (\acc bp -> namesB bp ++ acc) [] bps
 namesB (BTuple _ bps) = foldl (\acc bp -> namesB bp ++ acc) [] bps
 
+namesT (TFunction _ t1 t2) = nub $ namesT t1 ++ namesT t2
+namesT (TTuple ts) = nub $ concat $ map namesT ts
+namesT (TList _ t) = namesT t
+namesT (TNamed (Identifier id _)) = [id]
+namesT (TAlias _ t) = namesT t
+namesT (TRecord rfts) = nub $ concat $ map (\(RecordFieldType _ t) -> namesT t) rfts
+namesT (TParenthesis t) = namesT t
+namesT (TUnion (Identifier id _) _) = [id]
+namesT (TConstr _ t) = namesT t
+namesT (TApp _ t ts) = nub $ concat $ map (namesT) (t:ts)
+namesT _ = []
+
 divideDependant :: [ValueDeclaration] -> [[ValueDeclaration]]
 -- group mutually recursive declarations 
 -- sort based on dependency
@@ -236,7 +276,7 @@ divideDependant vds =
             let sorted = topoSort d in 
             map (\l -> map (\(SVD vd _) -> vd) l) $ group sorted []
         group [] acc = reverse acc
-        group (h:t) ta = let mut = h : filter (\h' -> compareSVD h h' == PEQ) t in group (t \\ mut) (mut:ta)
+        group (h:t) ta = let mut = h : filter (\h' -> compareP h h' == PEQ) t in group (t \\ mut) (mut:ta)
 
         getDependencies v@(Val pos bp e) = SVD v $ getDepExp e $ boundB bp
         boundB (BParenthesis bp) = boundB bp

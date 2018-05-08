@@ -1,0 +1,16 @@
+type RecA = {A :: String}
+
+type RecABC extends RecAB with {C :: Char}
+
+type RecAB extends RecA with {B :: Number}
+
+data U = A | B of T
+
+data T = C | D of U
+
+
+let main _ =
+    let x = {A = ""; B = 1; C = 'c'} :: RecABC
+    do print(x)
+    do print(B(D(A)))
+    0

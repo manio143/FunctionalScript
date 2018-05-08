@@ -1,0 +1,3 @@
+type RecG<a> = {A :: a}
+
+type RecGB extends RecG with {B :: Number}  //Cannot extend generic record types

@@ -1,0 +1,6 @@
+type RecM extends RecM2 with {A :: Number}  //Redefintion of record fields is not allowed
+type RecM2 extends RecM with {B :: Number}
+
+let main _ =
+    let y = {A = 1; B = 2} :: RecM
+    0
