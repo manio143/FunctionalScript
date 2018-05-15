@@ -388,11 +388,13 @@ listTail = FunctionValue $ BuiltIn inner
         inner (ListValue (a:as)) = return $ ListValue as
         inner (ListValue []) = errorT "Tail of empty list"                  
 
-arrNth = builtInOp inner
+arrNth = FunctionValue $
+            BuiltIn (\a -> return $ FunctionValue $
+                BuiltIn (\b -> inner a b))
     where 
-        inner (TupleValue vs) (NumberValue (Int n)) = vs !! fromInteger n
-        inner (ListValue vs) (NumberValue (Int n)) = vs !! fromInteger n
-        inner _ _ = error "ERROR: Index out of range"
+        inner (TupleValue vs) (NumberValue (Int n)) | fromInteger n < length vs = return $ vs !! fromInteger n
+        inner (ListValue vs) (NumberValue (Int n)) | fromInteger n < length vs = return $ vs !! fromInteger n
+        inner _ _ = errorT "Index out of range"
 
 toStr = FunctionValue $ BuiltIn $ \a -> return $ stringListToValue $ show a
 
@@ -453,28 +455,3 @@ dumpStore s = do
     where
         inf Leaf = []
         inf (Node tl v tr) = inf tl ++ [v] ++ inf tr
-
-recTest = 
-    LetExpression "f" 
-        (LambdaExpression (BoundParameter "x") 
-            (IfExpression 
-                (ApplicationExpression 
-                    (ApplicationExpression 
-                        (VariableExpression "(==)") 
-                        (ValueExpression (NumberValue (Int 0))))
-                    (VariableExpression "x"))
-                (ValueExpression (NumberValue (Int 0)))
-                (ApplicationExpression
-                    (ApplicationExpression
-                        (VariableExpression "(+)")
-                        (ValueExpression (NumberValue (Int 1))))
-                    (ApplicationExpression
-                        (VariableExpression "f")
-                        (ApplicationExpression
-                            (ApplicationExpression
-                                (VariableExpression "(-)")
-                                (VariableExpression "x"))
-                            (ValueExpression (NumberValue (Int 1))))))))
-        (ApplicationExpression 
-            (VariableExpression "f")
-            (ValueExpression (NumberValue (Int 5))))
