@@ -1,0 +1,4 @@
+let a = match [] with
+        | (x:xs) -> x
+
+let main _ = do print(a) in 0

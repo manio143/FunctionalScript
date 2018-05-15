@@ -1,0 +1,3 @@
+let f x = let (g a, _) = if a == 1 then x else x in g
+
+let main _ = f(\a -> 1, 2)

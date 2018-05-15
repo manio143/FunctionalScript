@@ -1,0 +1,3 @@
+let a = [1,2,3] !! 5
+
+let main _ = do print(a) in 0

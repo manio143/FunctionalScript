@@ -1,0 +1,5 @@
+let a = head([])
+
+let (b:_) = []
+
+let main _ = do print(a) in 0

@@ -1,0 +1,2 @@
+@main :: [String] -> [String]
+let main args = args

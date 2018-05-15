@@ -1,19 +1,21 @@
 # Opis języka
-Zdecydowałem się na język funkcyjny, którego składnia jest niejako połączeniem języków Haskell i F# (który jest z rodziny ML). W pliku `Specification.cf` znajduje się gramatyka języka w postaci LBNF, jakiej używa BNFC. Natomiast ze względu na ograniczenia tego konwertera musiałem sam zaimplementować parser języka w związku z czym nie jestem pewny, czy gramatyka opisuje w 100% mój język. Ale starałem się jak najlepiej ją napisać. Poniżej przejdziemy przez wszystkie elementy języka.
+Zdecydowałem się na język funkcyjny, którego składnia jest niejako połączeniem języków Haskell i F# (który jest z rodziny ML). Dodatkowo mamy rekordy, które są trochę jak te w JavaSciptcie. W pliku `Specification.cf` znajduje się gramatyka języka w postaci LBNF, jakiej używa BNFC. Natomiast ze względu na ograniczenia tego konwertera musiałem sam zaimplementować parser języka w związku z czym nie jestem pewny, czy gramatyka opisuje w 100% mój język. Ale starałem się jak najlepiej ją napisać. Poniżej przejdziemy przez wszystkie elementy języka.
 
 ## Typy
 Z założenia język jest silnie, statycznie typowany. Doczynienia mamy z typami prostymi, listami, krotkami, funkcjami, uniami i rekordami.
 
-### Typy proste
-Mamy trzy typy proste: liczby całkowite `Integer`, liczby zmiennoprzecinkowe `Float` oraz znaki `Char`.
+### Typy bazowe
+Mamy dwa typy bazowe: liczby (zarówno całkowite jak i zmiennoprecinkowe) `Number` oraz znaki `Char`.
 
-Dodatkowo mamy typ `String`, będący listą znaków, oraz `Num` który stanowi dowolną liczbę.
+Dodatkowo mamy typ `String`, będący listą znaków.
 
 ### Listy
 Standardowe listy, które można by samemu zadeklarować w taki sposób:
 
     data List<a> = Empty | Head of (a * List<a>)
     let (:) h t = Head((h,t))
+
+Listy są specjalnym typem z cukrem syntaktycznym. Nie da się samemu odwzorować ich pełnej funkcjonalności w języku.
 
 Typ listy o elementach typu `a` to `[a]`.
 
@@ -47,7 +49,7 @@ Typ krotki to lista typów oddzielonych przez znak '*'.
 
 Podobnie jak listy możemy używać wzorcu krotki w przypisaniach i wyrażeniach _match-with_. Lista przypisań musi być nie większa niż typ krotki:
 
-    let (i, s) = k
+    let (i, s) = k      // i = 1, s = "abc"
     let (i, s, c, d) = k //błąd
 
     match k with
@@ -155,6 +157,16 @@ Rekordów można użyć do symulacji programowania obiektowego, np:
     let elem eq x l = //...
     let intElem = elem(intEq)
 
+Funkcja, która przyjmuje rekord danego typu, może przyjąć również rekord o innymi typie, który zawiera potrzebne pola o tych samych typach
+
+    @fr :: {A :: String; B :: Char} -> ()
+    
+    type R = {A :: String; B :: Char; C :: Integer}
+    type Rb = {A :: Integer; B :: Integer}
+    
+    let _ = fr({A = ""; B = 'c'; C = 10} :: R)
+    let _ = fr({A = 1; B = 2} :: Rb) // error: type mismatch
+
 ## Struktura programu
 Program składa się listy deklaracji. Deklaracją jest definicja typu (rekordu, aliasu lub unii), adnotacja typu i deklaracja wartości. Deklaracje są globalne, a ich kolejność nieistotna. Powoduje to, że nie można redeklarować elementów o tej samej nazwie.
 
@@ -178,7 +190,7 @@ Do tego mamy adnotacje typów, które mają pomóc interpreterowi jeśli nie bę
     @identyfikator :: typ
 
 ### Deklaracje wartości
-Wartości będą obliczane w miarę możliwości leniwie, co pozwala nie uporządkowaną deklarację zależnych od siebie wartości.
+Wartości globalne są obliczane statycznie przed wywołaniem funkcji `main`, niekoniecznie w kolejności deklaracji w pliku. Wartości globalne (poza funkcjami) nie są rekurencyjne, natomiast wartości lokalne, w wyrażeniach _let_ mogą być rekurencyjne.
 
 Każda deklaracja zaczyna się od słowa kluczowego `let`, następnie mamy wzór wiązania, znak "=" i wyrażenie wartości.
 
@@ -186,7 +198,13 @@ Wzory wiązania to zmienne, funkcje z argumentami (również operatory), dekonst
 
 Wyrażenia wartości to: podwyrażenia `let`, warunki `if-then-else`, sprawdzanie wzorców `match-with`, wyrażenia wartości, wyrażenia z dopiskiem typu, wywołania funkcji, wyrażenia z operatorem, wyrażenia w których rolę grają skutki uboczne (`do` i `if-do`).
 
-Ponieważ długo by to wszystko tu opisywać, to kieruję czytelnika do pliku `example.fsc`, gdzie przedstawione są wszystkie konstrukcje w języku.
+Ponieważ długo by to wszystko tu opisywać, to kieruję czytelnika do pliku `../good/syntaxExamples.fsc`, gdzie przedstawione są wszystkie konstrukcje w języku.
 
 #### Pattern matching
 Ponieważ jest to jeden z punktów oceny, to warto wspomnieć, że nie będę ostrzegał użytkownika przed niepełną listą wzorców jakie są sprawdzane. Kiedy programowi skończą się wzory i użytkownik nie zadbał o wildcard to program skończy się z błędem.
+
+Nie będę ostrzegać użytkownika jeśli nie sprawdza wszystkich wzorców. Ta decyzja jest spowodowana tym, że domyślnie Haskell nie ostrzega, co pozwala na nietworzenie "pustych" przypadków, kiedy wiemy coś o tym jakie nasza funkcja będzie otrzymywać wartości
+
+    match value with
+    | //important stuff
+    | _ -> die("This cannot happen")

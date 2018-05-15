@@ -1,0 +1,4 @@
+//type T = [String]
+
+@main :: T -> Number
+let main _ = 0

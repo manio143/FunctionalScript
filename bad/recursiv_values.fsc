@@ -1,0 +1,4 @@
+let x = id(y)
+let y = id(x)
+
+let main _ = do print(x) in 0
