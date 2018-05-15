@@ -15,6 +15,8 @@ import Control.Monad.Trans
 import Control.Monad.Fix
 import Control.Monad
 
+import System.IO.Unsafe
+
 import Control.Arrow (first)
 import Data.Tuple (uncurry)
 
@@ -58,7 +60,7 @@ checkTypes types annotations constructors valDecls = do -- TODO above
         let typesSorted = map (\(TVD t _ _) -> t) $ topoSort (map (\t -> TVD t (nameT $ eitherUT t) (eitherUi t ++ (namesT $ eitherUT t))) types)
         let typeNames = namesOfTypes (map eitherUT typesSorted) []
         let duplicates = filter (\n -> elem n $ typeNames \\ [n]) typeNames
-        mapM_ (\n -> fail $ "Redefinition of type `"++n++"`") duplicates
+        mapM_ (\n -> unsafePerformIO $ errorT $ "Redefinition of type `"++n++"`") duplicates
         types' <- mergeLefts typesSorted (zip typeNames (map eitherUT typesSorted))
         constructors' <- checkAss typeNames constructors
         constructors'' <- assertConstrNames constructors'
@@ -430,7 +432,7 @@ valDeclToStore s vds =
                                         (withRec id (makeLambda params (transExp e)) s' s', id:ids)
                                     BOp _ op params ->
                                         (withRec (opIdent op) (makeLambda params (transExp e)) s' s', opIdent op : ids)
-                                    _ -> error "ERROR: Mutually recursive non-function values?"
+                                    _ -> unsafePerformIO $ errorT "ERROR: Mutually recursive non-function values?"
                     ) (s,[]) vds
             in return $ fix (\f s'' -> updateRec ids (f s'') s') s'
 
