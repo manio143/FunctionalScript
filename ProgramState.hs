@@ -379,8 +379,14 @@ listSeq = builtInOp $ \(NumberValue from) (NumberValue to) -> generate from to
         mkIntList = ListValue . map (NumberValue . Int)
         mkFloatList = ListValue . map (NumberValue . Float)
 
-listHead = FunctionValue $ BuiltIn (\(ListValue ls) -> return $ head ls)
-listTail = FunctionValue $ BuiltIn (\(ListValue ls) -> return $ ListValue $ tail ls)
+listHead = FunctionValue $ BuiltIn inner
+    where
+        inner (ListValue (a:as)) = return a
+        inner (ListValue []) = errorT "Head of empty list"
+listTail = FunctionValue $ BuiltIn inner
+    where
+        inner (ListValue (a:as)) = return $ ListValue as
+        inner (ListValue []) = errorT "Tail of empty list"                  
 
 arrNth = builtInOp inner
     where 

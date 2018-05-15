@@ -644,7 +644,7 @@ tiBPat (BListHead pos bphead bptail) = do
     unify pos stt (TList pos sth)
     return (ast ++ ash, [], stt, tvh ++ tvt)
 tiBPat (BRecord pos rbps) = do
-    (as', rfts_, tvs) <- foldM (\(as'', rfts', tvs') (RecordBindPattern pos id bp) -> do (ass, _, t, tvv) <- tiBPat bp; return (ass, (id,t):rfts', tvv ++ tvs'))  ([], [], []) rbps
+    (as', rfts_, tvs) <- foldM (\(as'', rfts', tvs') (RecordBindPattern pos id bp) -> do (ass, _, t, tvv) <- tiBPat bp; return (ass++as'', (id,t):rfts', tvv ++ tvs'))  ([], [], []) rbps
     let rfts = map (\(id, t) -> RecordFieldType id t) rfts_
     return (as', [], TRecord rfts, tvs)
 tiBPat (BFunctionDecl (Identifier id pos) ps) = do

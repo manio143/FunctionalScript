@@ -455,7 +455,7 @@ transExp (ERecordField _ e (Identifier id _)) =
 transExp (ETyped _ e _) = transExp e
 transExp (EApplication _ e es) = foldl (\el er -> ApplicationExpression el er) (transExp e) $ map transExp es
 transExp (ENegative _ e) = NegativeExpression $ transExp e
-transExp (ELet _ bp el ec) = makeLet bp (transExp el) (transExp ec)
+transExp (ELet _ bp el ec) = evalState (makeLet bp (transExp el) (transExp ec)) 0
 transExp (ELiteral _ l) = ValueExpression $ litToValue l
 transExp (EVariable (Identifier id _)) = VariableExpression id
 transExp (EDo _ ed ec) = DoExpression (transExp ed) (transExp ec)
@@ -480,7 +480,7 @@ transExp (EListComprehension pos e comps) =
                         (VariableExpression "__map")
                         (LambdaExpression 
                             (BoundParameter id)
-                            (makeLet bp (VariableExpression id) ep)))
+                            (evalState (makeLet bp (VariableExpression id) ep) 0)))
                     (transExp ec))
              , i+1)
 transExp (ERecord _ rfas) = 
@@ -501,10 +501,10 @@ transAlt (AST.Alternate _ pat e) = \val s -> makeAlt pat val s (transExp e)
 makeAlt :: AST.Pattern -> ProgramState.Value -> ProgramState.Store -> ProgramState.Expression -> MaybeT IO ProgramState.Expression
 makeAlt (PVariable id@(Identifier i _)) val s e = 
     case getVar i s of
-        Nothing -> return $ makeLet (BVariable id) (ValueExpression val) e
+        Nothing -> return $ evalState (makeLet (BVariable id) (ValueExpression val) e) 0
         Just vv -> case vv of
                     UnionValue{} -> if val == vv then return e else mzero
-                    _ -> return $ makeLet (BVariable id) (ValueExpression val) e
+                    _ -> return $ evalState (makeLet (BVariable id) (ValueExpression val) e) 0
 makeAlt (PLiteral _ lit) val _ e = if val == litToValue lit then return e else mzero
 makeAlt (PApplication _ (Identifier id _) pat) val s e =
     case val of
@@ -533,48 +533,57 @@ makeAlt (PRecord _ rps) val s ec =
     case val of
         RecordValue r -> foldr (\(RecordPattern _ (Identifier id _) p) epm -> do ep <- epm; let (Just v) = lookup id r in makeAlt p v s ep) (lift $ return ec) rps
 
+makeLet :: BindPattern -> ProgramState.Expression -> ProgramState.Expression -> State Integer ProgramState.Expression
 makeLet (BParenthesis bp) el ec = makeLet bp el ec
-makeLet (BWildCard _) el ec = DoExpression el ec
+makeLet (BWildCard _) el ec = return $ DoExpression el ec
 makeLet (BFunctionDecl (Identifier id _) params) el ec =
-    LetExpression id
+    return $ LetExpression id
         (foldr (\p e -> LambdaExpression (convParam p) e) el params)
         ec
-makeLet (BVariable (Identifier id _)) el ec = LetExpression id el ec
+makeLet (BVariable (Identifier id _)) el ec = return $ LetExpression id el ec
 makeLet (BOp pos op params) el ec = makeLet (BFunctionDecl (opId op pos) params) el ec 
-makeLet (BListHead _ bph bpt) el ec = 
-    LetExpression "__temp" el
-        (makeLet bph 
-            (ApplicationExpression
-                (VariableExpression "head")
-                (VariableExpression "__temp"))
-            (makeLet bpt
+makeLet (BListHead _ bph bpt) el ec = do
+    n <- newTempName
+    tail <- makeLet bpt
                 (ApplicationExpression
                     (VariableExpression "tail")
-                    (VariableExpression "__temp"))
-                ec))
-makeLet (BTuple _ bps) el ec =
-    LetExpression "__temp" el $ foldr (\(bp, i) e -> 
+                    (VariableExpression n))
+                ec
+    head <- makeLet bph 
+                (ApplicationExpression
+                    (VariableExpression "head")
+                    (VariableExpression n))
+                tail
+    return $ LetExpression n el head
+makeLet (BTuple _ bps) el ec = do
+    n <- newTempName
+    return . LetExpression n el =<< foldM (\e (bp, i) -> 
             makeLet bp (ApplicationExpression
                         (ApplicationExpression
                             (VariableExpression "(!!)")
-                            (VariableExpression "__temp")
+                            (VariableExpression n)
                          )
                         (ValueExpression $ NumberValue $ Int i)
                         ) e)
             ec (zip bps [0..])
-makeLet (BList _ bps) el ec =
-    LetExpression "__temp" el
-        $ foldr (\(bp, i) e -> makeLet bp (ApplicationExpression
+makeLet (BList _ bps) el ec = do
+    n <- newTempName
+    return . LetExpression n el
+        =<< foldM (\e (bp, i) -> makeLet bp (ApplicationExpression
                                         (ApplicationExpression
                                             (VariableExpression "(!!)")
-                                            (VariableExpression "__temp"))
+                                            (VariableExpression n))
                                         (ValueExpression $ NumberValue $ Int i)) e)
             ec (zip bps [0..])
-makeLet (BRecord _ rbps) el ec =
-    LetExpression "__temp" el
-        $ foldr (\(RecordBindPattern _ (Identifier id _) bp) e ->
-                    makeLet bp (RecordFieldExpression (VariableExpression "__temp") id) e)
+makeLet (BRecord _ rbps) el ec = do
+    n <- newTempName
+    return . LetExpression n el
+        =<< foldM (\e (RecordBindPattern _ (Identifier id _) bp) ->
+                    makeLet bp (RecordFieldExpression (VariableExpression n) id) e)
             ec rbps
+
+newTempName :: State Integer String
+newTempName = get >>= \c -> (put (c+1) >> return ("__temp_"++show c))
 
 litToValue (AST.Char c) = CharacterValue c
 litToValue (AST.String s) = ListValue $ map CharacterValue s
@@ -606,6 +615,7 @@ bindValue val (BListHead pos bph bpt) s =
         ListValue (h:t) -> do
             s' <- bindValue h bph s
             bindValue (ListValue t) bpt s'
+        ListValue [] -> posFail pos "Head of empty list"
 bindValue val (BWildCard _) s = return s
 bindValue val (BVariable (Identifier id pos)) s =
     case getVar id s of

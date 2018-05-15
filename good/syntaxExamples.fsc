@@ -36,6 +36,18 @@ let (ai,bs) = tuple
 let {A -> str} = rekord
 let (hd:tl) = list
 
+// dekonstrukcja przez let wewnątrz funkcji
+let fst k = let (x,_) = k in x
+let snd k = let (_,x) = k in x
+let zipF l1 l2 = //length(l1) == length(l2)
+    let (x:xs) = l1
+    let (y:ys) = l2 in
+    (x,y) : zipF(xs,ys)
+let recAB x = let { A -> a; B -> b } = x in (a,b)
+let deep x = let (_, [{A -> (f,_)}]) = x in f
+
+let deepTest = deep((1, [{A = ('a','b','c')}])) //'a'
+
 // pattern matching
 let listMatches =
     match list with
