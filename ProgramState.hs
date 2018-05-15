@@ -159,7 +159,7 @@ nativeError v =
 
 errorT :: String -> IO a
 errorT msg = do
-    putStrLn $ "ERROR: "++msg
+    hPutStrLn stderr $ "ERROR: "++msg
     error "Terminated."
 
 stringListFromValue :: Value -> String
