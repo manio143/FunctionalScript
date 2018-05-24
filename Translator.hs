@@ -49,6 +49,7 @@ nameT x = case x of
     TAlias (Identifier id _) _ -> id
     TNamed (Identifier id _) -> id
     TUnion (Identifier id _) _ -> id
+    TUnit _ -> "()"
     TConstr _ t -> nameT t
 
 checkTypes :: (Monad m) => [Either (Identifier, Type) Type] -> [Assumption] -> [Assumption] -> [ValueDeclaration] -> m ([Type], [Assumption], [Assumption], [ValueDeclaration])
@@ -517,7 +518,9 @@ makeAlt (PTuple _ pats) val s e =
 makeAlt (PList _ pats) val s e =
     case val of
         ListValue vs ->
-            if length vs < length pats then mzero
+            if length pats == 0 && length vs == 0 then lift $ return e
+            else if length pats == 0 then mzero
+            else if length vs < length pats then mzero
             else foldr (\(v,p) epm -> do ep <- epm; makeAlt p v s ep) (lift $ return e) (zip vs pats)
 makeAlt (PListHead _ pat1 pat2) val s e =
     case val of

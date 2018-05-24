@@ -31,7 +31,7 @@ opIdent :: Op -> Ident
 opIdent (Op op) = "("++op++")"
 
 -- BUILTIN TYPES
-tUnit = TNamed $ ident "()"
+tUnit = TUnit baseLibPos
 tChar = TNamed $ ident "Char"
 tNum = TNamed $ ident "Number"
 tBool = TUnion (ident "Bool") [UDEnum (ident "True"), UDEnum (ident "False")]
