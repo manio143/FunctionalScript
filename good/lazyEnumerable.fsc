@@ -1,0 +1,34 @@
+/* A lazy list structure */
+
+data Enumerable<a> = Nil | Elem of () -> (a * Enumerable<a>)
+
+let fold f acc l =
+    match l with
+    | [] -> acc
+    | (h:t) -> fold(f, f(acc,h), t)
+
+let length l =
+    match l with
+    | [] -> 0
+    | (h:t) -> length(t) + 1
+
+let enumOfList l =
+    fold(\acc x -> Elem(\() -> (x, acc)), Nil, l)
+
+let enumIter f e =
+    match e with
+    | Nil -> ()
+    | Elem(g) -> let (v,cont) = g(()) in do f(v) in enumIter(f, cont)
+
+let readNLines n =
+    if n <= 0 then Nil
+    else Elem(\() -> let x = readln(()) in (x, readNLines(n-1)))
+
+let main args =
+    match args with
+    | (h:[]) -> 
+        do printStr("Gimme " ++ toString(h) ++ " lines of text") in
+        let n = toNum(h) in 
+        do enumIter(\s -> print(length(s)), readNLines(n)) 
+        in 0
+    | _ -> do printStr("Provide an int parameter") in 1
